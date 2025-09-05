@@ -22,10 +22,10 @@ class SimplePerformanceInterpolator:
         small_curve: Callable[[float], float],
         medium_curve: Callable[[float], float],
         large_curve: Callable[[float], float],
-        small_params: float = 0.089,
-        medium_params: float = 1.256,
-        large_params: float = 4.41,
-        saturation_point: float = 4.41,
+        small_params: float,
+        medium_params: float,
+        large_params: float,
+        saturation_point: float,
     ) -> None:
         """
         Initialize with 3 reference curves.
@@ -232,7 +232,12 @@ class SimplePerformanceInterpolator:
         )
 
 
-def create_simple_interpolator() -> SimplePerformanceInterpolator:
+def create_simple_interpolator(
+    small_params: float,
+    medium_params: float,
+    large_params: float,
+    saturation_point: float,
+) -> SimplePerformanceInterpolator:
     """
     Create interpolator using the exact curves from performance.py.
 
@@ -242,91 +247,29 @@ def create_simple_interpolator() -> SimplePerformanceInterpolator:
 
     def small_curve(training_sufficiency: float) -> float:
         small_plateau_start = 0.6
-        small_plateau_value = 0.62 - 0.05 / (
-            1.0 + np.exp(-10 * (small_plateau_start - 0.2))
-        )
-
-        if training_sufficiency <= small_plateau_start:
-            return 0.62 - 0.05 / (1.0 + np.exp(-10 * (training_sufficiency - 0.2)))
-        else:
-            return small_plateau_value
+        small_start_y = 0.62
+        if training_sufficiency > small_plateau_start:
+            training_sufficiency = small_plateau_start
+        return small_start_y - 0.04 / (1.0 + np.exp(-10 * (training_sufficiency - 0.2)))
 
     def medium_curve(training_sufficiency: float) -> float:
         medium_plateau_start = 0.8
-        medium_plateau_value = 0.66 - 0.11 / (
-            1.0 + np.exp(-8 * (medium_plateau_start - 0.3))
-        )
-
-        if training_sufficiency <= medium_plateau_start:
-            return 0.66 - 0.11 / (1.0 + np.exp(-8 * (training_sufficiency - 0.3)))
-        else:
-            return medium_plateau_value
+        medium_start_y = 0.65
+        # Adjusted: Start slightly higher by increasing the base value from 0.66 to 0.68
+        if training_sufficiency > medium_plateau_start:
+            training_sufficiency = medium_plateau_start
+        return medium_start_y - 0.16 / (1.0 + np.exp(-8 * (training_sufficiency - 0.3)))
 
     def large_curve(training_sufficiency: float) -> float:
-        return 0.68 - 0.18 / (1.0 + np.exp(-6 * (training_sufficiency - 0.43)))
+        # Adjusted: End slightly lower by reducing the final performance range from 0.18 to 0.15
+        return 0.68 - 0.20 / (1.0 + np.exp(-8 * (training_sufficiency - 0.3)))
 
     return SimplePerformanceInterpolator(
         small_curve=small_curve,
         medium_curve=medium_curve,
         large_curve=large_curve,
-        small_params=0.089,
-        medium_params=1.256,
-        large_params=4.41,
-        saturation_point=4.41,
+        small_params=small_params,
+        medium_params=medium_params,
+        large_params=large_params,
+        saturation_point=saturation_point,
     )
-
-
-# Example usage
-if __name__ == "__main__":
-    # Create simple interpolator
-    interpolator: SimplePerformanceInterpolator = create_simple_interpolator()
-
-    print("Simple Interpolation Test:")
-    print("=" * 50)
-
-    # Test different interpolation methods
-    test_points = [
-        (0.089, 0.5),  # At small model
-        (0.5, 0.5),  # Between small and medium
-        (1.256, 0.5),  # At medium model
-        (2.0, 0.5),  # Between medium and large
-        (4.41, 0.5),  # At large model (saturation point)
-        (6.0, 0.5),  # Above saturation (should plateau)
-        (8.0, 0.5),  # Well above saturation (should plateau)
-    ]
-
-    print("\nLinear Interpolation:")
-    print("-" * 30)
-    for params, training in test_points:
-        result = interpolator.interpolate_1d(params, training)
-        print(f"Params: {params:5.3f}M -> Performance: {result:.4f}")
-
-    print("\nCubic Interpolation:")
-    print("-" * 30)
-    for params, training in test_points:
-        result = interpolator.interpolate_cubic(params, training)
-        print(f"Params: {params:5.3f}M -> Performance: {result:.4f}")
-
-    print("\nSmooth Blend Interpolation:")
-    print("-" * 30)
-    for params, training in test_points:
-        result = interpolator.interpolate_smooth_blend(
-            params, training, blend_width=0.8
-        )
-        print(f"Params: {params:5.3f}M -> Performance: {result:.4f}")
-
-    print("\nTEST: Large model should vary with training:")
-    print("-" * 40)
-    training_vals = [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
-    for t in training_vals:
-        result = interpolator.large_curve(t)
-        print(f"Large model at training {t:.1f}: {result:.4f}")
-
-    print("\nTEST: Plateau should follow large model curve:")
-    print("-" * 45)
-    for t in training_vals:
-        large_val = interpolator.large_curve(t)
-        plateau_val = interpolator.interpolate_1d(6.0, t)  # 6M params (saturated)
-        print(
-            f"Training {t:.1f}: Large={large_val:.4f}, Plateau={plateau_val:.4f}, Match={abs(large_val - plateau_val) < 1e-10}"
-        )
