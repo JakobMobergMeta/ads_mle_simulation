@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Import the model performance API for performance calculations
-from admarket.ads_copilot.common.training_simulation.model_performance_api import (
+from model_performance_api import (
     ModelPerformanceAPI,
 )
 

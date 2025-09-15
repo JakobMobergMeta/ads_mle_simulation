@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from admarket.ads_copilot.common.training_simulation.simple_interpolation import (
+from simple_interpolation import (
     create_simple_interpolator,
 )
 
@@ -51,36 +51,39 @@ class ModelPerformanceAPI:
     _call_counter: int = 0
     spent_budget: float = 0.0
     use_noise: bool = True
+    
+    DEFAULT_CONFIG: Dict[str, Any] = {
+        # Shared performance parameters
+        "MAX_TRAINING_DAYS": 60,
+        "SMALL_NETWORK": [128, 128],
+        "MEDIUM_NETWORK": [1024, 1024],
+        "LARGE_NETWORK": [2048, 2048],
+        "INPUT_DIMENSIONS": 512,
+        "OUTPUT_DIMENSIONS": 10,
+        "GLOBAL_NOISE_SCALE": 0.02,
+        "BASE_MODEL_FLOPS": 1e8,
+        "FLOPS_PER_PARAMETER": 100.0,
+        "MACHINE_EFFICIENCY": 5e12,
+        # Noise configuration
+        "NOISE_TRAINING_FACTOR_MIN": 0.01,
+        "NOISE_TRAINING_FACTOR_MAX": 0.7,
+        "NOISE_PARAM_FACTOR": 1.0,
+        # Performance bounds
+        "MIN_PERFORMANCE": 0.0,
+        "MAX_PERFORMANCE": 1.0,
+        "MIN_QPS": 500,
+        "RANDOM_STATE": None,
+        "GPUS_PER_DAY": 8,
+        "TOTAL_BUDGET_GPU_DAYS": 8000,
+        "WAIT": False,
+        "WAIT_SECONDS_PER_TRAINING_DAY": 1,
+    }
 
     def __init__(self, model_config_dict: Optional[Dict[str, Any]] = None) -> None:
-        if model_config_dict is None:
-            # Centralized model configuration dictionary
-            model_config_dict = {
-                # Shared performance parameters for consistent behavior across all graphs
-                "MAX_TRAINING_DAYS": 60,  # Maximum training days (represents 100% training sufficiency)
-                "SMALL_NETWORK": [128, 128],
-                "MEDIUM_NETWORK": [1024, 1024],
-                "LARGE_NETWORK": [2048, 2048],
-                "INPUT_DIMENSIONS": 512,  # Input dimensionality
-                "OUTPUT_DIMENSIONS": 10,  # Output dimensionality
-                "GLOBAL_NOISE_SCALE": 0.02,  # Global noise scale used consistently across all plots
-                "BASE_MODEL_FLOPS": 1e8,  # Base model complexity: 100M FLOP/sample (reduced for more sensitivity)
-                "FLOPS_PER_PARAMETER": 100.0,  # Additional FLOP/sample per parameter (increased for more impact)
-                "MACHINE_EFFICIENCY": 5e12,  # Machine efficiency: 5T FLOP/s (adjusted to maintain baseline ~50K QPS)
-                # Noise configuration
-                "NOISE_TRAINING_FACTOR_MIN": 0.01,  # Minimum noise factor at high training
-                "NOISE_TRAINING_FACTOR_MAX": 0.7,  # Additional noise factor at low training
-                "NOISE_PARAM_FACTOR": 1.0,  # Parameter noise factor
-                # Performance bounds
-                "MIN_PERFORMANCE": 0.0,  # Minimum performance value
-                "MAX_PERFORMANCE": 1.0,  # Maximum performance value
-                "MIN_QPS": 500,  # Minimum QPS value
-                "RANDOM_STATE": None,
-                "GPUS_PER_DAY": 8,
-                "TOTAL_BUDGET_GPU_DAYS": 8000,
-                "WAIT": False,
-                "WAIT_SECONDS_PER_TRAINING_DAY": 1,
-            }
+        cfg = dict(self.DEFAULT_CONFIG)  # shallow copy is enough since values are primitives/lists
+        if model_config_dict:
+            cfg.update(model_config_dict)
+        model_config_dict = cfg
 
         # Set computed values
         model_config_dict["LARGE_PARAMS"] = self.arch_to_params(
