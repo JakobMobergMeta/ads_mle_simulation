@@ -109,7 +109,7 @@ class ModelPerformanceAPI:
 
     def get_default_model_config_dict(self) -> Dict[str, Any]:
         """Get the default model configuration dictionary."""
-        return self.model_config_dict.copy()
+        return self.DEFAULT_CONFIG.copy()
 
     def arch_to_params(
         self, arch: Any, input_size: int = 512, output_size: int = 10
