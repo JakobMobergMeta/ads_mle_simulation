@@ -2,8 +2,12 @@
 # pyre-strict
 
 """
-Bento cell for visualizing training_ne as a function of training_sufficiency and complexity.
-Creates a 3D noisy surface visualization with smooth interpolation.
+Bento cell for visualizing training_ne as a function of training_sufficiency and architecture characteristics.
+Creates various plots showcasing different aspects of model architecture performance:
+- Network depth analysis
+- Layer width analysis
+- Multi-subarchitecture configurations
+- Architecture complexity heatmaps
 """
 
 from dataclasses import dataclass
@@ -13,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Import the model performance API for performance calculations
-from model_performance_api import (
+from admarket.ads_copilot.common.training_simulation.model_performance_api import (
     ModelPerformanceAPI,
 )
 
@@ -23,8 +27,10 @@ PLOT_NOISE_SCALE: Optional[float] = None
 
 
 # Get model parameter definitions from API configuration
-def get_model_params() -> Tuple[float, float, float, List[int], List[int], List[int]]:
-    """Get model parameters from the API configuration."""
+def get_model_complexities() -> (
+    Tuple[float, float, float, List[List[int]], List[List[int]], List[List[int]]]
+):
+    """Get model complexities from the API configuration."""
     api = ModelPerformanceAPI()
     config = api.model_config_dict
 
@@ -32,45 +38,51 @@ def get_model_params() -> Tuple[float, float, float, List[int], List[int], List[
     medium_arch = config["MEDIUM_NETWORK"]
     large_arch = config["LARGE_NETWORK"]
 
-    small_params = config["SMALL_PARAMS"]
-    medium_params = config["MEDIUM_PARAMS"]
-    large_params = config["LARGE_PARAMS"]
+    # Use the actual complexity_ne values directly
+    small_complexity_ne, _ = api.arch_to_scaled_complexities(small_arch)
+    medium_complexity_ne, _ = api.arch_to_scaled_complexities(medium_arch)
+    large_complexity_ne, _ = api.arch_to_scaled_complexities(large_arch)
 
     return (
-        small_params,
-        medium_params,
-        large_params,
+        small_complexity_ne,
+        medium_complexity_ne,
+        large_complexity_ne,
         small_arch,
         medium_arch,
         large_arch,
     )
 
 
-# Get actual parameter values from API
-SMALL_PARAMS: float
-MEDIUM_PARAMS: float
-LARGE_PARAMS: float
-SMALL_ARCH: List[int]
-MEDIUM_ARCH: List[int]
-LARGE_ARCH: List[int]
+# Get actual complexity values from API
+SMALL_COMPLEXITY_NE: float
+MEDIUM_COMPLEXITY_NE: float
+LARGE_COMPLEXITY_NE: float
+SMALL_ARCH: List[List[int]]
+MEDIUM_ARCH: List[List[int]]
+LARGE_ARCH: List[List[int]]
 
-(SMALL_PARAMS, MEDIUM_PARAMS, LARGE_PARAMS, SMALL_ARCH, MEDIUM_ARCH, LARGE_ARCH) = (
-    get_model_params()
-)
+(
+    SMALL_COMPLEXITY_NE,
+    MEDIUM_COMPLEXITY_NE,
+    LARGE_COMPLEXITY_NE,
+    SMALL_ARCH,
+    MEDIUM_ARCH,
+    LARGE_ARCH,
+) = get_model_complexities()
 
 # Print the actual values being used
-print("📊 Model Parameters from API Configuration:")
-print(f"   Small Network: {SMALL_ARCH} → {SMALL_PARAMS:.3f}M params")
-print(f"   Medium Network: {MEDIUM_ARCH} → {MEDIUM_PARAMS:.3f}M params")
-print(f"   Large Network: {LARGE_ARCH} → {LARGE_PARAMS:.3f}M params")
+print("📊 Model Complexities from API Configuration:")
+print(f"   Small Network: {SMALL_ARCH} → {SMALL_COMPLEXITY_NE:.3f} complexity_ne")
+print(f"   Medium Network: {MEDIUM_ARCH} → {MEDIUM_COMPLEXITY_NE:.3f} complexity_ne")
+print(f"   Large Network: {LARGE_ARCH} → {LARGE_COMPLEXITY_NE:.3f} complexity_ne")
 
 
 @dataclass
 class PlotConfig:
     """Configuration class to reduce parameter passing complexity."""
 
-    training_days_range: Tuple[int, int] = (6, 60)
-    model_params_range: Tuple[float, float] = (0.1, 6.0)
+    training_days_range: Tuple[int, int] = (1, 60)
+    complexity_range: Tuple[float, float] = (0.0, 1.0)
     figsize: Tuple[int, int] = (14, 10)
     metric: str = "training_ne"
     noise_scale: Optional[float] = None
@@ -105,17 +117,16 @@ def _get_metric_style(metric: str) -> MetricStyle:
 
 
 def _generate_surface_data(
-    T: Any, P: Any, metric: str, noise_scale: Optional[float]
+    T: Any, C: Any, metric: str, noise_scale: Optional[float]
 ) -> Tuple[Any, Any]:
-    """Generate surface data by calling simulation API for each point."""
+    """Generate surface data using scaled complexities directly."""
     Z_smooth = np.zeros_like(T)
     Z_noisy = np.zeros_like(T)
 
-    print(f"Calculating 3D surface for {metric} using API function...")
+    print(f"Calculating 3D surface for {metric} using scaled complexities...")
     print(f"🎛️  Noise parameter: {noise_scale}")
 
     # Create fresh API instance for this surface generation
-
     api_default_noise = ModelPerformanceAPI()
 
     dict_config_no_noise = api_default_noise.get_default_model_config_dict()
@@ -135,32 +146,105 @@ def _generate_surface_data(
 
     for i in range(T.shape[0]):
         for j in range(T.shape[1]):
-            # Use train_model for a single day to get the final performance
             training_days = int(T[i, j])
-            params_millions = P[i, j]
+            complexity_scaled_ne = C[i, j]
+            complexity_scaled_qps = C[i, j]  # Use same complexity for both metrics
 
-            # Train model to get final performance (ignoring budget for surface generation)
-            ne_no_noise, qps_no_noise, curve = api_no_noise.train_model(
-                training_days=training_days,
-                params_millions=params_millions,
-                ignore_budget=True,
+            # Calculate training sufficiency
+            training_sufficiency = np.clip(
+                training_days / api_no_noise.model_config_dict["MAX_TRAINING_DAYS"],
+                0.0,
+                1.0,
             )
 
-            ne_noise, qps_noise, curve = api_noise.train_model(
-                training_days=training_days,
-                params_millions=params_millions,
-                ignore_budget=True,
+            # Calculate performance directly using API's internal methods
+            # No noise version
+            training_ne_smooth = api_no_noise._calculate_base_performance(
+                complexity_scaled_ne, training_sufficiency
             )
+            qps_smooth = api_no_noise._calculate_qps(complexity_scaled_qps)
+
+            # Noisy version
+            training_ne_noisy = api_noise._calculate_base_performance(
+                complexity_scaled_ne, training_sufficiency
+            )
+            qps_noisy = api_noise._calculate_qps(complexity_scaled_qps)
+
+            # Apply noise if enabled
+            if api_noise.model_config_dict["GLOBAL_NOISE_SCALE"] > 0.0:
+                training_ne_noisy, qps_noisy = api_noise._apply_noise_to_metrics(
+                    training_ne_noisy,
+                    qps_noisy,
+                    training_sufficiency,
+                    api_noise.model_config_dict["GLOBAL_NOISE_SCALE"],
+                )
 
             # Extract the requested metric
             if metric == "training_ne":
-                Z_smooth[i, j] = ne_no_noise
-                Z_noisy[i, j] = ne_noise
-
+                Z_smooth[i, j] = training_ne_smooth
+                Z_noisy[i, j] = training_ne_noisy
             else:
-                Z_smooth[i, j] = qps_no_noise
-                Z_noisy[i, j] = qps_noise
+                Z_smooth[i, j] = qps_smooth
+                Z_noisy[i, j] = qps_noisy
+
     return Z_smooth, Z_noisy
+
+
+def _create_3d_plot_complexity(
+    T: Any,
+    C: Any,
+    Z_smooth: Any,
+    Z_noisy: Any,
+    style: MetricStyle,
+    figsize: Tuple[int, int],
+) -> plt.Figure:
+    """Create and configure the 3D plot with complexity axis."""
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111, projection="3d")
+
+    # Create surface plot with noise
+    surface = ax.plot_surface(
+        T, C, Z_noisy, cmap=style.colormap, alpha=0.8, edgecolor="none"
+    )
+
+    # Overlay smooth surface as wireframe
+    ax.plot_wireframe(
+        T,
+        C,
+        Z_smooth,
+        colors="black",
+        alpha=0.3,
+        linewidth=0.5,
+        label="Smooth Base Surface",
+    )
+
+    # Customize the plot
+    ax.set_xlabel("Training Days", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Complexity Scaled [0,1]", fontsize=12, fontweight="bold")
+    ax.set_zlabel(style.z_label, fontsize=12, fontweight="bold")
+    ax.set_title(
+        style.title.replace("Model Params", "Complexity"),
+        fontsize=14,
+        fontweight="bold",
+        pad=20,
+    )
+
+    # Add colorbar and annotations
+    fig.colorbar(surface, shrink=0.5, aspect=20, label=style.colorbar_label)
+    ax.text2D(
+        0.02,
+        0.98,
+        "More noise at low training sufficiency",
+        transform=ax.transAxes,
+        fontsize=10,
+        verticalalignment="top",
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.8},
+    )
+    ax.view_init(elev=25, azim=45)
+
+    return fig
 
 
 def _create_3d_plot(
@@ -216,33 +300,33 @@ def _create_3d_plot(
 
 
 def plot_3d_surface(config: PlotConfig) -> Tuple[plt.Figure, Tuple[Any, Any, Any, Any]]:
-    """Create 3D surface plot using the unified performance function."""
-    # Create parameter grids with 1 day step size
+    """Create 3D surface plot using scaled complexity directly."""
+    # Create grids with 1 day step size for training and 0.05 increments for complexity
     training_steps = config.training_days_range[1] - config.training_days_range[0] + 1
     training_days_values = np.linspace(
         config.training_days_range[0],
         config.training_days_range[1],
         training_steps,
     )
-    # Calculate model params steps to always use 0.1 increments
-    model_params_steps = (
-        int((config.model_params_range[1] - config.model_params_range[0]) / 0.1) + 1
+    # Use 0.05 increments for complexity to get good resolution
+    complexity_steps = (
+        int((config.complexity_range[1] - config.complexity_range[0]) / 0.05) + 1
     )
-    model_params_values = np.linspace(
-        config.model_params_range[0],
-        config.model_params_range[1],
-        model_params_steps,
+    complexity_values = np.linspace(
+        config.complexity_range[0],
+        config.complexity_range[1],
+        complexity_steps,
     )
-    T, P = np.meshgrid(training_days_values, model_params_values)
+    T, C = np.meshgrid(training_days_values, complexity_values)
 
-    # Generate surface data through simulation (keeps API calls)
-    Z_smooth, Z_noisy = _generate_surface_data(T, P, config.metric, config.noise_scale)
+    # Generate surface data through direct complexity calculation
+    Z_smooth, Z_noisy = _generate_surface_data(T, C, config.metric, config.noise_scale)
 
-    # Get style configuration and create plot
+    # Get style configuration and create plot with updated labels
     style = _get_metric_style(config.metric)
-    fig = _create_3d_plot(T, P, Z_smooth, Z_noisy, style, config.figsize)
+    fig = _create_3d_plot_complexity(T, C, Z_smooth, Z_noisy, style, config.figsize)
 
-    return fig, (T, P, Z_noisy, Z_smooth)
+    return fig, (T, C, Z_noisy, Z_smooth)
 
 
 def _calculate_reference_performance(
@@ -271,17 +355,17 @@ def _calculate_reference_performance(
         # Use train_model to get final performance for each model size
         small_final_ne, small_final_qps, _ = api.train_model(
             training_days=training_days_int,
-            params_millions=SMALL_PARAMS,
+            arch=SMALL_ARCH,
             ignore_budget=True,
         )
         medium_final_ne, medium_final_qps, _ = api.train_model(
             training_days=training_days_int,
-            params_millions=MEDIUM_PARAMS,
+            arch=MEDIUM_ARCH,
             ignore_budget=True,
         )
         large_final_ne, large_final_qps, _ = api.train_model(
             training_days=training_days_int,
-            params_millions=LARGE_PARAMS,
+            arch=LARGE_ARCH,
             ignore_budget=True,
         )
 
@@ -298,17 +382,17 @@ def _calculate_reference_performance(
             # For unsupported metrics, default to training_ne values
             small_final_ne, _, _ = api.train_model(
                 training_days=training_days_int,
-                params_millions=SMALL_PARAMS,
+                arch=SMALL_ARCH,
                 ignore_budget=True,
             )
             medium_final_ne, _, _ = api.train_model(
                 training_days=training_days_int,
-                params_millions=MEDIUM_PARAMS,
+                arch=MEDIUM_ARCH,
                 ignore_budget=True,
             )
             large_final_ne, _, _ = api.train_model(
                 training_days=training_days_int,
-                params_millions=LARGE_PARAMS,
+                arch=LARGE_ARCH,
                 ignore_budget=True,
             )
             small_performance.append(small_final_ne)
@@ -347,25 +431,26 @@ def _plot_reference_curves(
     """Create and style the reference curves plot."""
     plt.figure(figsize=figsize)
 
-    # Plot curves with different styles
+    # Plot curves with different styles using complexity_ne values
+    # Use shorter labels to avoid text overlap
     curve_styles = [
         (
             small_performance,
             "#FF6B6B",
             "o",
-            f"Small Model {SMALL_ARCH} ({SMALL_PARAMS:.3f}M params)",
+            f"Small (complexity: {SMALL_COMPLEXITY_NE:.3f})",
         ),
         (
             medium_performance,
             "#4ECDC4",
             "s",
-            f"Medium Model {MEDIUM_ARCH} ({MEDIUM_PARAMS:.3f}M params)",
+            f"Medium (complexity: {MEDIUM_COMPLEXITY_NE:.3f})",
         ),
         (
             large_performance,
             "#45B7D1",
             "^",
-            f"Large Model {LARGE_ARCH} ({LARGE_PARAMS:.3f}M params)",
+            f"Large (complexity: {LARGE_COMPLEXITY_NE:.3f})",
         ),
     ]
 
@@ -421,13 +506,16 @@ def _style_plot(metric: str) -> None:
         fontweight="bold",
         pad=20,
     )
+    # Improved legend positioning to avoid text overlap
     plt.legend(
-        fontsize=11,
-        loc="upper right",
+        fontsize=10,
+        loc="center right",
+        bbox_to_anchor=(0.98, 0.5),
         frameon=True,
         fancybox=True,
         shadow=True,
-        framealpha=0.9,
+        framealpha=0.95,
+        ncol=1,
     )
     plt.grid(True, alpha=0.3, linestyle="--", linewidth=0.5)
 
@@ -509,7 +597,7 @@ def _create_training_ne_surface_plot() -> plt.Figure:
     print("📊 Graph 2 - 3D Training NE Surface: Using noise_scale=API_DEFAULT")
     config = PlotConfig(
         training_days_range=(6, 60),
-        model_params_range=(0.1, 10),
+        complexity_range=(0.0, 1.0),
         metric="training_ne",
         noise_scale=PLOT_NOISE_SCALE,
     )
@@ -524,7 +612,7 @@ def _create_qps_surface_plot() -> plt.Figure:
     print("📊 Graph 3 - 3D QPS Surface: Using noise_scale=API_DEFAULT")
     config = PlotConfig(
         training_days_range=(6, 60),
-        model_params_range=(0.1, 10),
+        complexity_range=(0.0, 1.0),
         metric="qps",
         noise_scale=PLOT_NOISE_SCALE,
     )
@@ -535,7 +623,7 @@ def _create_qps_surface_plot() -> plt.Figure:
 
 def plot_3d_surface_no_noise(
     training_days_range: Tuple[int, int] = (6, 60),
-    model_params_range: Tuple[float, float] = (0.1, 10.0),
+    complexity_range: Tuple[float, float] = (0.0, 1.0),
     figsize: Tuple[int, int] = (14, 10),
     metric: str = "training_ne",
 ) -> Tuple[plt.Figure, Tuple[Any, Any, Any, Any]]:
@@ -544,21 +632,19 @@ def plot_3d_surface_no_noise(
 
     Args:
         training_days_range: Range of training days to visualize
-        model_params_range: Range of model parameters (in millions)
-        training_steps: Number of steps in training days dimension
-        model_params_steps: Number of steps in model params dimension
+        complexity_range: Range of complexity values [0,1]
         figsize: Figure size
         metric: Metric to visualize (default: training_ne)
 
     Returns:
-        Figure and data tuple (T, P, Z_noisy, Z_smooth)
+        Figure and data tuple (T, C, Z_noisy, Z_smooth)
     """
     print(f"\n🎯 Creating Clean 3D Surface Plot for {metric.upper()} (NO NOISE)...")
     print("📊 Clean 3D Surface: Using noise_scale=0.0 (PURE MATHEMATICAL SURFACE)")
 
     config = PlotConfig(
         training_days_range=training_days_range,
-        model_params_range=model_params_range,
+        complexity_range=complexity_range,
         figsize=figsize,
         metric=metric,
         noise_scale=0.0,  # NO NOISE
@@ -566,25 +652,26 @@ def plot_3d_surface_no_noise(
 
     # Calculate training steps to always use 1 day step size
     training_steps = config.training_days_range[1] - config.training_days_range[0] + 1
-    # Calculate model params steps to always use 0.1 increments
-    model_params_steps = (
-        int((config.model_params_range[1] - config.model_params_range[0]) / 0.1) + 1
+    # Calculate complexity steps to use 0.05 increments
+    complexity_steps = (
+        int((config.complexity_range[1] - config.complexity_range[0]) / 0.05) + 1
     )
+
     # Create parameter grids
     training_days_values = np.linspace(
         config.training_days_range[0],
         config.training_days_range[1],
         training_steps,
     )
-    model_params_values = np.linspace(
-        config.model_params_range[0],
-        config.model_params_range[1],
-        model_params_steps,
+    complexity_values = np.linspace(
+        config.complexity_range[0],
+        config.complexity_range[1],
+        complexity_steps,
     )
-    T, P = np.meshgrid(training_days_values, model_params_values)
+    T, C = np.meshgrid(training_days_values, complexity_values)
 
     # Generate surface data with NO noise (clean mathematical surface)
-    Z_smooth, Z_noisy = _generate_surface_data(T, P, config.metric, config.noise_scale)
+    Z_smooth, Z_noisy = _generate_surface_data(T, C, config.metric, config.noise_scale)
 
     # Since noise_scale=0.0, Z_smooth and Z_noisy should be identical
     # Create a clean 3D plot without noise artifacts
@@ -597,19 +684,21 @@ def plot_3d_surface_no_noise(
     style = _get_metric_style(config.metric)
 
     # Update style for clean visualization
-    clean_title = style.title.replace("NOISY", "CLEAN MATHEMATICAL")
+    clean_title = style.title.replace("NOISY", "CLEAN MATHEMATICAL").replace(
+        "Model Params", "Complexity"
+    )
 
     # Create clean surface plot (no noise, so only one surface needed)
     surface = ax.plot_surface(
-        T, P, Z_smooth, cmap=style.colormap, alpha=0.9, edgecolor="none"
+        T, C, Z_smooth, cmap=style.colormap, alpha=0.9, edgecolor="none"
     )
 
     # Add contour lines for better readability
-    ax.contour(T, P, Z_smooth, levels=10, colors="black", alpha=0.4, linewidths=0.5)
+    ax.contour(T, C, Z_smooth, levels=10, colors="black", alpha=0.4, linewidths=0.5)
 
     # Customize the plot
     ax.set_xlabel("Training Days", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Model Params in M", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Complexity Scaled [0,1]", fontsize=12, fontweight="bold")
     ax.set_zlabel(style.z_label, fontsize=12, fontweight="bold")
     ax.set_title(clean_title, fontsize=14, fontweight="bold", pad=20)
 
@@ -628,12 +717,12 @@ def plot_3d_surface_no_noise(
     ax.view_init(elev=25, azim=45)
 
     plt.show()
-    return fig, (T, P, Z_noisy, Z_smooth)
+    return fig, (T, C, Z_noisy, Z_smooth)
 
 
 def plot_3d_surface_training_ne_no_noise(
     training_days_range: Tuple[int, int] = (6, 60),
-    model_params_range: Tuple[float, float] = (0.1, 10.0),
+    complexity_range: Tuple[float, float] = (0.0, 1.0),
     figsize: Tuple[int, int] = (14, 10),
 ) -> Tuple[plt.Figure, Tuple[Any, Any, Any, Any]]:
     """
@@ -641,99 +730,31 @@ def plot_3d_surface_training_ne_no_noise(
 
     Args:
         training_days_range: Range of training days to visualize
-        model_params_range: Range of model parameters (in millions)
-        training_steps: Number of steps in training days dimension
-        model_params_steps: Number of steps in model params dimension
+        complexity_range: Range of complexity values [0,1]
         figsize: Figure size
 
     Returns:
-        Figure and data tuple (T, P, Z_noisy, Z_smooth)
+        Figure and data tuple (T, C, Z_noisy, Z_smooth)
     """
     print("\n🎯 Creating Clean 3D Surface Plot for TRAINING_NE (NO NOISE)...")
     print(
         "📊 Clean Training NE Surface: Using noise_scale=0.0 (PURE MATHEMATICAL SURFACE)"
     )
 
-    config = PlotConfig(
+    # Use the general plot_3d_surface_no_noise function
+    return plot_3d_surface_no_noise(
         training_days_range=training_days_range,
-        model_params_range=model_params_range,
+        complexity_range=complexity_range,
         figsize=figsize,
         metric="training_ne",
-        noise_scale=0.0,  # NO NOISE
     )
-
-    # Calculate training steps to always use 1 day step size
-    training_steps = config.training_days_range[1] - config.training_days_range[0] + 1
-    # Calculate model params steps to always use 0.1 increments
-    model_params_steps = (
-        int((config.model_params_range[1] - config.model_params_range[0]) / 0.1) + 1
-    )
-    # Create parameter grids
-    training_days_values = np.linspace(
-        config.training_days_range[0],
-        config.training_days_range[1],
-        training_steps,
-    )
-    model_params_values = np.linspace(
-        config.model_params_range[0],
-        config.model_params_range[1],
-        model_params_steps,
-    )
-    T, P = np.meshgrid(training_days_values, model_params_values)
-
-    # Generate surface data with NO noise (clean mathematical surface)
-    Z_smooth, Z_noisy = _generate_surface_data(T, P, config.metric, config.noise_scale)
-
-    # Since noise_scale=0.0, Z_smooth and Z_noisy should be identical
-    # Create a clean 3D plot without noise artifacts
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
-    fig = plt.figure(figsize=config.figsize)
-    ax = fig.add_subplot(111, projection="3d")
-
-    # Get style configuration
-    style = _get_metric_style(config.metric)
-
-    # Update style for clean visualization
-    clean_title = style.title.replace("NOISY", "CLEAN MATHEMATICAL")
-
-    # Create clean surface plot (no noise, so only one surface needed)
-    surface = ax.plot_surface(
-        T, P, Z_smooth, cmap=style.colormap, alpha=0.9, edgecolor="none"
-    )
-
-    # Add contour lines for better readability - suppress the unused variable warning
-    ax.contour(T, P, Z_smooth, levels=10, colors="black", alpha=0.4, linewidths=0.5)
-
-    # Customize the plot
-    ax.set_xlabel("Training Days", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Model Params in M", fontsize=12, fontweight="bold")
-    ax.set_zlabel(style.z_label, fontsize=12, fontweight="bold")
-    ax.set_title(clean_title, fontsize=14, fontweight="bold", pad=20)
-
-    # Add colorbar and annotations
-    fig.colorbar(surface, shrink=0.5, aspect=20, label=style.colorbar_label)
-    ax.text2D(
-        0.02,
-        0.98,
-        "🎯 CLEAN TRAINING NE SURFACE: No noise applied",
-        transform=ax.transAxes,
-        fontsize=11,
-        fontweight="bold",
-        verticalalignment="top",
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": "lightgreen", "alpha": 0.9},
-    )
-    ax.view_init(elev=25, azim=45)
-
-    plt.show()
-    return fig, (T, P, Z_noisy, Z_smooth)
 
 
 def _create_clean_training_ne_3d_surface_plot() -> plt.Figure:
     """Create clean 3D surface plot with NO noise for training_ne."""
     fig, _ = plot_3d_surface_training_ne_no_noise(
         training_days_range=(6, 60),
-        model_params_range=(0.1, 10),
+        complexity_range=(0.0, 1.0),
     )
     return fig
 
@@ -848,25 +869,30 @@ def _create_clean_curves_plot() -> plt.Figure:
     return fig
 
 
-def main() -> Tuple[plt.Figure, plt.Figure, plt.Figure, plt.Figure, plt.Figure]:
-    """Main function to call from Bento notebook. Creates visualizations including reference curves and 3D surfaces."""
-    print("🔥 Generating Performance Analysis...")
+def main() -> None:
+    """Main function to create all visualizations in the bento cell."""
+    print("🚀 Starting Bento Complexity Heatmap Visualization Suite")
     print("=" * 60)
 
-    # Create visualizations
-    fig1 = _create_reference_curves_plot()  # With noise (default)
-    fig2 = _create_clean_curves_plot()  # Clean curves with no noise
-
-    fig3 = _create_qps_surface_plot()
-    fig4 = _create_training_ne_surface_plot()
-    fig5 = (
+    try:
+        # Create all visualizations
+        _create_clean_curves_plot()
+        _create_reference_curves_plot()
+        _create_training_ne_surface_plot()
+        _create_qps_surface_plot()
         _create_clean_training_ne_3d_surface_plot()
-    )  # NEW: Clean 3D surface for training_ne with no noise
 
-    # Log results
-    _log_analysis_results()
+        # Log analysis results
+        _log_analysis_results()
 
-    return fig1, fig2, fig3, fig4, fig5
+        print("\n🎉 All visualizations completed successfully!")
+
+    except Exception as e:
+        print(f"\n❌ Error during visualization creation: {str(e)}")
+        raise
+
+
+# =======================================================================
 
 
 # For direct Bento execution

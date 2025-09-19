@@ -1,0 +1,11 @@
+Reults: 
+
+Human: (target 3)
+MLE1 (jamoberg) 0.122369
+
+
+Rules based (optimizers): (target 3)
+
+
+Agent: (target 3)
+Metamate: 0.1208

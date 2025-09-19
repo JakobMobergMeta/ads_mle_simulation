@@ -1,0 +1,61 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fnil\fcharset0 HelveticaNeue-Bold;\f1\fnil\fcharset0 HelveticaNeue;\f2\fnil\fcharset0 Menlo-Regular;
+}
+{\colortbl;\red255\green255\blue255;\red10\green16\blue18;\red255\green255\blue255;}
+{\*\expandedcolortbl;;\cssrgb\c3922\c7451\c9020;\cssrgb\c100000\c100000\c100000;}
+\margl1440\margr1440\vieww11820\viewh8700\viewkind0
+\deftab720
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs34\fsmilli17160 \cf2 \cb3 \expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 ask: Find the best model for 60 days\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f1\b0\fs28 \cf2 \cb3 \strokec2 You got 10 tries to find the best architecture\
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 \strokec2 input format\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f1\b0 \cf2 \cb3 \strokec2 arch: [[]]\
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 \strokec2 input ranges\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f1\b0 \cf2 \cb3 \strokec2 layer sizes: 64 - 2048\
+layers: 1-5\
+sub_arches 1-5\
+training_days: 60\
+example: arch =[[64, 64]] 1 sub_arch 2 layers wtih 64 layersize each\
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 \strokec2 Evaluation:\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f1\b0 \cf2 \cb3 \strokec2 qps need to be > 3500 score is calculated by % improvement from BASELINE_NE\
+\pard\pardeftab720\partightenfactor0
+
+\f2 \cf2 #def get_score(self, ne: float) -> float:\
+#    baseline_ne = self.model_config_dict["BASELINE_NE"]\
+#    return (baseline_ne - ne) / baseline_ne\
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs55 \cf2 \cb3 \strokec2 sample code\
+\pard\pardeftab720\partightenfactor0
+
+\f2\b0\fs28 \cf2 \cb3 \strokec2 from admarket.ads_copilot.common.training_simulation.model_performance_api import  ModelPerformanceAPI\
+\
+model = ModelPerformanceAPI()\
+config = model.get_default_model_config_dict()\
+config["GLOBAL_NOISE_SCALE"] = 0.0\
+model = ModelPerformanceAPI(config)\
+ne, qps, curve = model.train_model(training_days= 60, arch=[[64,64]],ignore_budget=True)\
+model.get_score(ne)\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f1 \cf2 we will go back and forth,\
+you will give me an arch suggested\
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 \strokec2 i will give you ne and qps for 60days\
+}

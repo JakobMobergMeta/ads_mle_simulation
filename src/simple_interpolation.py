@@ -22,10 +22,9 @@ class SimplePerformanceInterpolator:
         small_curve: Callable[[float], float],
         medium_curve: Callable[[float], float],
         large_curve: Callable[[float], float],
-        small_params: float,
-        medium_params: float,
-        large_params: float,
-        saturation_point: float,
+        small_complexity: float,
+        medium_complexity: float,
+        large_complexity: float,
     ) -> None:
         """
         Initialize with 3 reference curves.
@@ -38,14 +37,11 @@ class SimplePerformanceInterpolator:
         self.small_curve = small_curve
         self.medium_curve = medium_curve
         self.large_curve = large_curve
-        self.small_params = small_params
-        self.medium_params = medium_params
-        self.large_params = large_params
-        self.saturation_point = saturation_point
+        self.small_complexity = small_complexity
+        self.medium_complexity = medium_complexity
+        self.large_complexity = large_complexity
 
-    def interpolate_1d(
-        self, params_millions: float, training_sufficiency: float
-    ) -> float:
+    def interpolate_1d(self, complexity: float, training_sufficiency: float) -> float:
         """
         Simple 1D interpolation between the 3 curves based on parameter count.
 
@@ -56,9 +52,6 @@ class SimplePerformanceInterpolator:
         Returns:
             Interpolated performance value
         """
-        # Handle plateau region - performance stays at large model level
-        if params_millions >= self.saturation_point:
-            return self.large_curve(training_sufficiency)
 
         # Get performance values from all 3 curves at this training level
         small_perf = self.small_curve(training_sufficiency)
@@ -66,177 +59,27 @@ class SimplePerformanceInterpolator:
         large_perf = self.large_curve(training_sufficiency)
 
         # Reference parameter points and their performance values
-        param_points = np.array(
-            [self.small_params, self.medium_params, self.large_params]
+        complexity_points = np.array(
+            [self.small_complexity, self.medium_complexity, self.large_complexity]
         )
         perf_values = np.array([small_perf, medium_perf, large_perf])
 
         # Simple linear interpolation between curves
-        if params_millions <= self.small_params:
+        if complexity <= self.small_complexity:
             # Below small model - use small curve
             return small_perf
-        elif params_millions >= self.large_params:
+        elif complexity >= self.large_complexity:
             # At or above large model (but below saturation) - use large curve
             return large_perf
         else:
             # Interpolate between the curves
-            return float(np.interp(params_millions, param_points, perf_values))
-
-    def interpolate_cubic(
-        self, params_millions: float, training_sufficiency: float
-    ) -> float:
-        """
-        Cubic interpolation for smoother results.
-
-        Args:
-            params_millions: Model parameter count in millions
-            training_sufficiency: Training sufficiency (0.0 to 1.0)
-
-        Returns:
-            Interpolated performance value with cubic smoothness
-        """
-        # Handle plateau region - performance stays at large model level
-        if params_millions >= self.saturation_point:
-            return self.large_curve(training_sufficiency)
-
-        # Get performance values from all 3 curves
-        small_perf = self.small_curve(training_sufficiency)
-        medium_perf = self.medium_curve(training_sufficiency)
-        large_perf = self.large_curve(training_sufficiency)
-
-        # Reference points
-        param_points = np.array(
-            [self.small_params, self.medium_params, self.large_params]
-        )
-        perf_values = np.array([small_perf, medium_perf, large_perf])
-
-        # Extend with boundary conditions for cubic spline
-        if params_millions <= self.small_params:
-            return small_perf
-        elif params_millions >= self.large_params:
-            return large_perf
-        else:
-            # Create cubic interpolator
-            cubic_interp = interp1d(
-                param_points,
-                perf_values,
-                kind="cubic",
-                bounds_error=False,
-                fill_value="extrapolate",
-            )
-            result = cubic_interp(params_millions)
-            return float(result)
-
-    def interpolate_2d_grid(
-        self,
-        training_grid: Any,
-        param_range: Tuple[float, float] = (0.05, 8.0),
-        n_param_points: int = 30,
-        method: str = "cubic",
-    ) -> Callable[[Any, Any], Any]:
-        """
-        Create 2D grid interpolation for the entire surface.
-
-        Args:
-            training_grid: Training sufficiency values to sample
-            param_range: Parameter range to cover
-            n_param_points: Number of parameter points
-            method: Interpolation method ('linear', 'cubic', 'nearest')
-
-        Returns:
-            2D interpolation function
-        """
-        # Create parameter grid
-        param_grid = np.linspace(param_range[0], param_range[1], n_param_points)
-
-        # Generate grid data
-        param_coords = []
-        training_coords = []
-        performance_values = []
-
-        for p in param_grid:
-            for t in training_grid:
-                param_coords.append(p)
-                training_coords.append(t)
-                # Use 1D interpolation to get the value
-                performance_values.append(self.interpolate_1d(p, t))
-
-        # Convert to arrays
-        points: Any = np.column_stack([param_coords, training_coords])
-        values: Any = np.array(performance_values)
-
-        def grid_interpolator(params: Any, training: Any) -> Any:
-            """2D grid interpolation function."""
-            if np.isscalar(params):
-                params = np.array([params])
-            if np.isscalar(training):
-                training = np.array([training])
-
-            query_points = np.column_stack([params.ravel(), training.ravel()])
-            result = griddata(
-                points, values, query_points, method=method, fill_value=0.5
-            )  # Default fallback
-
-            return result.reshape(params.shape) if result.size > 1 else float(result)
-
-        return grid_interpolator
-
-    def interpolate_smooth_blend(
-        self,
-        params_millions: float,
-        training_sufficiency: float,
-        blend_width: float = 0.5,
-    ) -> float:
-        """
-        Smooth blending between curves with adjustable transition width.
-
-        Args:
-            params_millions: Model parameter count in millions
-            training_sufficiency: Training sufficiency (0.0 to 1.0)
-            blend_width: Width of blending transitions (larger = smoother)
-
-        Returns:
-            Smoothly blended performance value
-        """
-        # Handle plateau region - performance stays at large model level
-        if params_millions >= self.saturation_point:
-            return self.large_curve(training_sufficiency)
-
-        # Get curve values
-        small_perf = self.small_curve(training_sufficiency)
-        medium_perf = self.medium_curve(training_sufficiency)
-        large_perf = self.large_curve(training_sufficiency)
-
-        # Calculate smooth weights using Gaussian-like functions
-        small_weight = np.exp(
-            -(((params_millions - self.small_params) / blend_width) ** 2)
-        )
-        medium_weight = np.exp(
-            -(((params_millions - self.medium_params) / blend_width) ** 2)
-        )
-        large_weight = np.exp(
-            -(((params_millions - self.large_params) / blend_width) ** 2)
-        )
-
-        # Normalize weights
-        total_weight = small_weight + medium_weight + large_weight
-        small_weight /= total_weight
-        medium_weight /= total_weight
-        large_weight /= total_weight
-
-        # Weighted combination
-        return (
-            small_weight * small_perf
-            + medium_weight * medium_perf
-            + large_weight * large_perf
-        )
+            return float(np.interp(complexity, complexity_points, perf_values))
 
 
 def create_simple_interpolator(
-    small_params: float,
-    medium_params: float,
-    large_params: float,
-    saturation_point: float,
+    small_complexity: float,
+    medium_complexity: float,
+    large_complexity: float,
 ) -> SimplePerformanceInterpolator:
     """
     Create interpolator using the exact curves from performance.py.
@@ -268,8 +111,7 @@ def create_simple_interpolator(
         small_curve=small_curve,
         medium_curve=medium_curve,
         large_curve=large_curve,
-        small_params=small_params,
-        medium_params=medium_params,
-        large_params=large_params,
-        saturation_point=saturation_point,
+        small_complexity=small_complexity,
+        medium_complexity=medium_complexity,
+        large_complexity=large_complexity,
     )
