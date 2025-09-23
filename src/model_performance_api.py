@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from admarket.ads_copilot.common.training_simulation.simple_interpolation import (
+from simple_interpolation import (
     create_simple_interpolator,
 )
 
