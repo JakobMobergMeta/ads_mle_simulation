@@ -85,7 +85,9 @@ class ModelPerformanceAPI:
         "TOTAL_BUDGET_GPU_DAYS": 8000,
         "WAIT": False,
         "WAIT_SECONDS_PER_TRAINING_DAY": 1,
-        "BASELINE_NE": 0.5597180757102014,  # Baseline NE for the model (currently for [512,512] 60 days no noise)
+        #        "BASELINE_NE": 0.559786328135504,
+        "BASELINE_ARCH": [[256, 256], [512, 512], [256, 256], [64], [64]],
+        "BASELINE_DAY": 60,
         "MIN_SUBARCHES": 1,  # Minimum number of sub-architectures
         "DEPTH_RANGE": [1, 5],
         "FLAX_RANGE": [64, 2048],
@@ -139,6 +141,10 @@ class ModelPerformanceAPI:
         self.spent_budget = 0.0
 
         self.model_cache = CompositeKeyCache()
+        self.model_config_dict["BASELINE_NE"] = self._get_model_performance(
+            self.model_config_dict["BASELINE_DAY"],
+            self.model_config_dict["BASELINE_ARCH"],
+        )["training_ne"]
 
     def __init__(self, model_config_dict: Optional[Dict[str, Any]] = None) -> None:
         cfg = dict(
