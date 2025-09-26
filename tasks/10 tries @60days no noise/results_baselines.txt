@@ -1,14 +1,14 @@
 Reults:
 
 Rules based (optimizers): (target 3)
-Random 0.123542
-SimulatedAnnealing 0.112115
-Skopt-ET 0.120485
-Skopt-GBRT 0.120485
-Skopt-GP 0.123332
-Skopt-RF 0.120485
-Skopt-Random 0.120485
-TPE 0.122895
+Random 0.123649
+SimulatedAnnealing 0.112223
+Skopt-ET 0.120592
+Skopt-GBRT 0.120592
+Skopt-GP 0.123439
+Skopt-RF 0.120592
+Skopt-Random 0.120592
+TPE 0.123002
 
-[baseline] arch=[[512, 512]] days=60 NE=0.569509
+[baseline] arch=[[256, 256], [512, 512], [256, 256], [64], [64]] days=60 NE=0.559786
 [seed] initial arch: [[256, 256]]
