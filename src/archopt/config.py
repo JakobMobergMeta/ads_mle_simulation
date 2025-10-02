@@ -13,4 +13,3 @@ QPS_MIN = 3500.0
 
 BASELINE_ARCH: List[List[int]] = [[256,256],[512,512],[256,256],[64],[64]]
 OUT_ROOT = Path("benchmark_results_nested_arch")
-NETWORKS_CSV_PATH = "../tasks/10 tries @60days no noise/networks.csv"
