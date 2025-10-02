@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Import the model performance API for performance calculations
-from model_performance_api import (
+from .model_performance_api import (
     ModelPerformanceAPI,
 )
 

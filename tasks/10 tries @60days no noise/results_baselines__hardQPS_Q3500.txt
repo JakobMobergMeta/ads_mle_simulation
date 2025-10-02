@@ -1,0 +1,13 @@
+Reults:
+
+Rules based (optimizers): (target 3) — aggregated across modifiers
+Random 0.111006 (min=0.086151, max=0.133507, n=10)
+SimulatedAnnealing 0.017475 (min=0.003649, max=0.031259, n=10)
+Skopt-ET 0.085445 (min=0.015712, max=0.130089, n=10)
+Skopt-GBRT 0.085445 (min=0.015712, max=0.130089, n=10)
+Skopt-GP 0.087303 (min=0.041294, max=0.118307, n=10)
+Skopt-RF 0.085445 (min=0.015712, max=0.130089, n=10)
+Skopt-Random 0.085445 (min=0.015712, max=0.130089, n=10)
+TPE 0.104445 (min=0.082806, max=0.130588, n=10)
+
+[baseline] arch=[[256, 256], [512, 512], [256, 256], [64], [64]] days=60
