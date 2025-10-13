@@ -66,10 +66,9 @@ def _summarize_results(results_dict: Dict[str, List[RunLog]]) -> Dict[str, Dict[
     
     return method_stats
 
-def _ensure_report_dir(root_dir: str, n_modifiers: int) -> Path:
-    report_dir = Path(root_dir).resolve() / "tasks" / "10 tries @60days no noise" / f"baselines_results_{n_modifiers}modifiers"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    return report_dir
+def _ensure_report_dir(results_dir: Path) -> Path:
+    """Return the results directory (it should already exist)"""
+    return results_dir
 
 # -----------------------
 # core pipeline
@@ -92,6 +91,16 @@ def run_all(
     """
     root = Path(root_dir).resolve()
 
+    # Determine which seeds to use first so we know the count
+    if n_seeds is not None:
+        # Use specified number of seeds starting from the config SEEDS
+        seeds_to_use = SEEDS[:n_seeds] if n_seeds <= len(SEEDS) else SEEDS + list(range(len(SEEDS), n_seeds))
+    else:
+        # Use all seeds from config
+        seeds_to_use = SEEDS
+    
+    n_seeds_actual = len(seeds_to_use)
+
     # Handle single default modifier vs multiple modifiers
     if single_default_modifier:
         # Use the explicit default NETWORK_MODIFIERS from ModelPerformanceAPI
@@ -103,10 +112,10 @@ def run_all(
             4: [0.1, 0.1, 0.9, 0.1, 0.1]
         }
         modifiers_list = [default_modifier]
-        results_dir_name = "baselines_results_default_modifier"
+        results_dir_name = f"1modifiers_{n_seeds_actual}seeds"
     else:
-        # Modifiers live under the results directory
-        results_dir_name = f"baselines_results_{n_modifier_sets}modifiers"
+        # Multiple modifiers
+        results_dir_name = f"{n_modifier_sets}modifiers_{n_seeds_actual}seeds"
         
     tasks_dir = root / "tasks" / "10 tries @60days no noise"
     results_dir = tasks_dir / results_dir_name
@@ -138,15 +147,7 @@ def run_all(
     else:
         print("[run_all] Using single default modifier (no network modifications)")
 
-    # --- Determine which seeds to use ---
-    if n_seeds is not None:
-        # Use specified number of seeds starting from the config SEEDS
-        seeds_to_use = SEEDS[:n_seeds] if n_seeds <= len(SEEDS) else SEEDS + list(range(len(SEEDS), n_seeds))
-        print(f"[run_all] Using {n_seeds} seeds: {seeds_to_use}")
-    else:
-        # Use all seeds from config
-        seeds_to_use = SEEDS
-        print(f"[run_all] Using all {len(SEEDS)} seeds from config: {seeds_to_use}")
+    print(f"[run_all] Using {n_seeds_actual} seeds: {seeds_to_use}")
 
     # --- Build suggestors (optional ones only if installed) ---
     suggestors = [
@@ -219,15 +220,15 @@ def run_all(
 
         all_runs[label] = results
 
-    return all_runs, modifiers_list, mode_tag
+    return all_runs, modifiers_list, mode_tag, results_dir
 
 # -----------------------
 # reports
 # -----------------------
 def write_all_reports(
-    root_dir: str,
     all_runs_by_label: Dict[str, Dict[str, List[RunLog]]],
     modifiers_list: List[Dict[int, List[float]]],
+    results_dir: Path,
     *,
     qps_min: float,
     mode_tag: str,
@@ -236,7 +237,7 @@ def write_all_reports(
     Aggregate across all NETWORK_MODIFIERS.
     Saves report files with the mode tag in the filename.
     """
-    report_dir = _ensure_report_dir(root_dir, len(modifiers_list))
+    report_dir = _ensure_report_dir(results_dir)
     # Generate filenames based on mode - no mode tag for hard QPS
     if mode_tag.startswith("hardQPS"):
         baseline_txt = report_dir / "results_baselines.txt"
@@ -407,7 +408,7 @@ def main():
     )
     args = parser.parse_args()
 
-    all_runs, modifiers_list, mode_tag = run_all(
+    all_runs, modifiers_list, mode_tag, results_dir = run_all(
         root_dir=args.root_dir,
         n_modifier_sets=args.n_modifiers,
         seed=args.seed,
@@ -420,9 +421,9 @@ def main():
     )
 
     write_all_reports(
-        root_dir=args.root_dir,
         all_runs_by_label=all_runs,
         modifiers_list=modifiers_list,
+        results_dir=results_dir,
         qps_min=args.qps_min,
         mode_tag=mode_tag,
     )
