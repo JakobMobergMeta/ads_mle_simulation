@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import json
 import pandas as pd
 
@@ -16,6 +16,7 @@ from archopt.logging_utils import save_runs, save_arches_per_method, plot_runs
 from archopt.suggestors import (
     RandomSuggestor,
     SimulatedAnnealingSuggestor,
+    LogSpaceSimulatedAnnealingSuggestor,
     TPESuggestor,                 # optional (if Optuna installed)
     SkoptBOSuggestor,             # optional (if scikit-optimize installed)
 )
@@ -53,8 +54,8 @@ def _summarize_results(results_dict: Dict[str, List[RunLog]]) -> Dict[str, float
         method_best[method] = best if best != float("-inf") else 0.0
     return method_best
 
-def _ensure_report_dir(root_dir: str) -> Path:
-    report_dir = Path(root_dir).resolve() / "tasks" / "10 tries @60days no noise"
+def _ensure_report_dir(root_dir: str, n_modifiers: int) -> Path:
+    report_dir = Path(root_dir).resolve() / "tasks" / "10 tries @60days no noise" / f"baselines_results_{n_modifiers}modifiers"
     report_dir.mkdir(parents=True, exist_ok=True)
     return report_dir
 
@@ -70,6 +71,8 @@ def run_all(
     qps_min: float = 3500.0,
     soft_qps: bool = False,
     soft_qps_tau: float = 0.15,
+    single_default_modifier: bool = False,
+    n_seeds: Optional[int] = None,
 ):
     """
     Run HPO experiments for multiple NETWORK_MODIFIERS sets.
@@ -77,10 +80,25 @@ def run_all(
     """
     root = Path(root_dir).resolve()
 
-    # Modifiers live under tasks (shared between modes unless you regenerate)
+    # Handle single default modifier vs multiple modifiers
+    if single_default_modifier:
+        # Use the explicit default NETWORK_MODIFIERS from ModelPerformanceAPI
+        default_modifier = {
+            0: [0.2, 0.2, 1, 0.1, 0.1],
+            1: [0.4, 0.2, 0.7, 0, 0.05],
+            2: [0.1, 0.1, 0.6, 0.4, 0.05],
+            3: [0.2, 0.4, 0.7, 0.3, 0.05],
+            4: [0.1, 0.1, 0.9, 0.1, 0.1]
+        }
+        modifiers_list = [default_modifier]
+        results_dir_name = "baselines_results_default_modifier"
+    else:
+        # Modifiers live under the results directory
+        results_dir_name = f"baselines_results_{n_modifier_sets}modifiers"
+        
     tasks_dir = root / "tasks" / "10 tries @60days no noise"
-    tasks_dir.mkdir(parents=True, exist_ok=True)
-    modifiers_csv_path = tasks_dir / "modifiers.csv"
+    results_dir = tasks_dir / results_dir_name
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     # Separate OUT_ROOT per mode to avoid collisions
     out_root_base = _resolve_out_root(root, OUT_ROOT)
@@ -89,24 +107,40 @@ def run_all(
     out_root.mkdir(parents=True, exist_ok=True)
 
     # --- Load or generate modifiers ---
-    if modifiers_csv_path.exists() and not regenerate_modifiers:
-        print(f"[run_all] Found existing modifiers at {modifiers_csv_path}, loading...")
-        modifiers_list = load_modifiers_csv(modifiers_csv_path)
-    else:
-        if modifiers_csv_path.exists() and regenerate_modifiers:
-            print(f"[run_all] Regenerating modifiers (overwriting {modifiers_csv_path})...")
+    if not single_default_modifier:
+        modifiers_csv_path = results_dir / f"modifiers_{EVAL_TRAINING_DAYS}days_{N_TRIALS}tries_{n_modifier_sets}modifiers.csv"
+        
+        if modifiers_csv_path.exists() and not regenerate_modifiers:
+            print(f"[run_all] Found existing modifiers at {modifiers_csv_path}, loading...")
+            modifiers_list = load_modifiers_csv(modifiers_csv_path)
         else:
-            print(f"[run_all] No modifiers file found. Generating {n_modifier_sets} sets...")
-        modifiers_list = generate_random_modifiers_list(
-            n_sets=n_modifier_sets, step=0.05, seed=seed,
-        )
-        save_modifiers_csv(modifiers_list, modifiers_csv_path)
-        print(f"[run_all] Saved {len(modifiers_list)} modifier sets to {modifiers_csv_path}")
+            if modifiers_csv_path.exists() and regenerate_modifiers:
+                print(f"[run_all] Regenerating modifiers (overwriting {modifiers_csv_path})...")
+            else:
+                print(f"[run_all] No modifiers file found. Generating {n_modifier_sets} sets...")
+            modifiers_list = generate_random_modifiers_list(
+                n_sets=n_modifier_sets, step=0.05, seed=seed,
+            )
+            save_modifiers_csv(modifiers_list, modifiers_csv_path)
+            print(f"[run_all] Saved {len(modifiers_list)} modifier sets to {modifiers_csv_path}")
+    else:
+        print("[run_all] Using single default modifier (no network modifications)")
+
+    # --- Determine which seeds to use ---
+    if n_seeds is not None:
+        # Use specified number of seeds starting from the config SEEDS
+        seeds_to_use = SEEDS[:n_seeds] if n_seeds <= len(SEEDS) else SEEDS + list(range(len(SEEDS), n_seeds))
+        print(f"[run_all] Using {n_seeds} seeds: {seeds_to_use}")
+    else:
+        # Use all seeds from config
+        seeds_to_use = SEEDS
+        print(f"[run_all] Using all {len(SEEDS)} seeds from config: {seeds_to_use}")
 
     # --- Build suggestors (optional ones only if installed) ---
     suggestors = [
         RandomSuggestor(),
         SimulatedAnnealingSuggestor(T0=0.5, alpha=0.996, warmup=3),
+        LogSpaceSimulatedAnnealingSuggestor(T0=0.5, alpha=0.996, warmup=3),
     ]
     # Optional: Optuna TPE
     try:
@@ -129,7 +163,10 @@ def run_all(
     all_runs: Dict[str, Dict[str, List[RunLog]]] = {}
 
     for idx, modifiers in enumerate(modifiers_list, start=1):
-        label = f"modifiers_{idx:02d}"
+        if single_default_modifier:
+            label = "default_modifier"
+        else:
+            label = f"modifiers_{idx:02d}"
 
         cfg = {
             "GLOBAL_NOISE_SCALE": 0.0,
@@ -152,10 +189,10 @@ def run_all(
         results: Dict[str, List[RunLog]] = {}
         for sug in suggestors:
             results[sug.name] = []
-            for s in SEEDS:
-                results[sug.name].append(
-                    bench.run(sug, n_trials=N_TRIALS, seed=s, initial_arch=BASELINE_ARCH)
-                )
+            for s in seeds_to_use:
+                # Run N_TRIALS + 1 total: step 0 = baseline, steps 1-N_TRIALS = additional trials
+                run_result = bench.run(sug, n_trials=N_TRIALS + 1, seed=s, initial_arch=BASELINE_ARCH)
+                results[sug.name].append(run_result)
 
         out_dir = out_root / label
         save_runs(results, out_dir)
@@ -187,10 +224,19 @@ def write_all_reports(
     Aggregate across all NETWORK_MODIFIERS.
     Saves report files with the mode tag in the filename.
     """
-    report_dir = _ensure_report_dir(root_dir)
-    baseline_txt = report_dir / f"results_baselines__{mode_tag}.txt"
-    details_txt  = report_dir / f"results_details_baselines__{mode_tag}.txt"
-    flat_csv     = report_dir / f"Sim_ML_Bench_l3_60days_10tries_baselines__{mode_tag}.csv"
+    report_dir = _ensure_report_dir(root_dir, len(modifiers_list))
+    # Generate filenames based on mode - no mode tag for hard QPS
+    if mode_tag.startswith("hardQPS"):
+        baseline_txt = report_dir / "results_baselines.txt"
+        details_txt = report_dir / "results_details_baselines.txt"
+    else:
+        baseline_txt = report_dir / f"results_baselines__{mode_tag}.txt"
+        details_txt = report_dir / f"results_details_baselines__{mode_tag}.txt"
+    # Generate filename based on mode - no mode tag for hard QPS
+    if mode_tag.startswith("hardQPS"):
+        flat_csv = report_dir / f"Sim_ML_Bench_l3_60days_{N_TRIALS}tries_baselines.csv"
+    else:
+        flat_csv = report_dir / f"Sim_ML_Bench_l3_60days_{N_TRIALS}tries_baselines__{mode_tag}.csv"
 
     # --- Text summary (average/min/max of best-valid-QPS per optimizer across modifiers) ---
     # Only “best trials” that meet QPS ≥ qps_min are considered (handled in evaluation/reporting flow).
@@ -297,13 +343,13 @@ def main():
     parser.add_argument(
         "--root-dir",
         type=str,
-        default="/shared_data0/weiqiuy/ads_mle_simulation",
+        default=".",
         help="Root directory for tasks and outputs.",
     )
     parser.add_argument(
         "--n-modifiers",
         type=int,
-        default=10,
+        default=100,
         help="Number of random modifier sets to generate if not loading existing file.",
     )
     parser.add_argument(
@@ -334,6 +380,17 @@ def main():
         default=0.15,
         help="Softness parameter for soft-QPS penalty.",
     )
+    parser.add_argument(
+        "--single-default-modifier",
+        action="store_true",
+        help="Use single default modifier (no network modifications) instead of multiple random modifiers.",
+    )
+    parser.add_argument(
+        "--n-seeds",
+        type=int,
+        default=None,
+        help="Number of seeds to use (overrides config SEEDS). If not specified, uses all seeds from config.",
+    )
     args = parser.parse_args()
 
     all_runs, modifiers_list, mode_tag = run_all(
@@ -344,6 +401,8 @@ def main():
         qps_min=args.qps_min,
         soft_qps=args.soft_qps,
         soft_qps_tau=args.soft_qps_tau,
+        single_default_modifier=args.single_default_modifier,
+        n_seeds=args.n_seeds,
     )
 
     write_all_reports(

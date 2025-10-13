@@ -3,7 +3,7 @@ from typing import List
 
 EVAL_TRAINING_DAYS = 60
 N_TRIALS = 10
-SEEDS = [0]
+SEEDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 WIDTH_MIN, WIDTH_MAX = 64, 2048
 MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB = 1, 5
