@@ -1,14 +1,14 @@
 Reults:
 
-Rules based (optimizers): (target 3) — aggregated across modifiers
-LogSpaceSimulatedAnnealing 0.119721 (min=0.119721, max=0.119721, n=1)
-Random 0.123045 (min=0.123045, max=0.123045, n=1)
-SimulatedAnnealing 0.120366 (min=0.120366, max=0.120366, n=1)
-Skopt-ET 0.125713 (min=0.125713, max=0.125713, n=1)
-Skopt-GBRT 0.123161 (min=0.123161, max=0.123161, n=1)
-Skopt-GP 0.124140 (min=0.124140, max=0.124140, n=1)
-Skopt-RF 0.123161 (min=0.123161, max=0.123161, n=1)
-Skopt-Random 0.123161 (min=0.123161, max=0.123161, n=1)
-TPE 0.123527 (min=0.123527, max=0.123527, n=1)
+Rules based (optimizers): (target 3) — aggregated across all seed×modifier combinations
+LogSpaceSimulatedAnnealing 0.042948 (min=0.000000, max=0.119721, n=10)
+Random 0.114251 (min=0.085738, max=0.123045, n=10)
+SimulatedAnnealing 0.074907 (min=0.018646, max=0.120366, n=10)
+Skopt-ET 0.108260 (min=0.029821, max=0.125713, n=10)
+Skopt-GBRT 0.103178 (min=0.029821, max=0.123161, n=10)
+Skopt-GP 0.121586 (min=0.117804, max=0.124140, n=10)
+Skopt-RF 0.107692 (min=0.029821, max=0.123161, n=10)
+Skopt-Random 0.103178 (min=0.029821, max=0.123161, n=10)
+TPE 0.112612 (min=0.057076, max=0.123527, n=10)
 
 [baseline] arch=[[256, 256], [512, 512], [256, 256], [64], [64]] days=60

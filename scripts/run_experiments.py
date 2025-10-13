@@ -44,15 +44,27 @@ def _mode_tag(soft_qps: bool, soft_qps_tau: float, qps_min: float) -> str:
 def _best_trial_score(runlog: RunLog) -> float:
     return max((t.value for t in runlog.trials), default=float("-inf"))
 
-def _summarize_results(results_dict: Dict[str, List[RunLog]]) -> Dict[str, float]:
-    """Best single trial across all runs for each method (already filtered upstream)."""
-    method_best = {}
+def _summarize_results(results_dict: Dict[str, List[RunLog]]) -> Dict[str, Dict[str, float]]:
+    """Aggregate all trial scores across all runs (seeds × modifiers) for each method."""
+    method_stats = {}
     for method, runs in results_dict.items():
-        best = float("-inf")
+        all_scores = []
         for r in runs:
-            best = max(best, _best_trial_score(r))
-        method_best[method] = best if best != float("-inf") else 0.0
-    return method_best
+            # Collect ALL trial scores from this run (not just the best)
+            for trial in r.trials:
+                all_scores.append(trial.value)
+        
+        if all_scores:
+            method_stats[method] = {
+                "mean": sum(all_scores) / len(all_scores),
+                "min": min(all_scores),
+                "max": max(all_scores),
+                "count": len(all_scores)
+            }
+        else:
+            method_stats[method] = {"mean": 0.0, "min": 0.0, "max": 0.0, "count": 0}
+    
+    return method_stats
 
 def _ensure_report_dir(root_dir: str, n_modifiers: int) -> Path:
     report_dir = Path(root_dir).resolve() / "tasks" / "10 tries @60days no noise" / f"baselines_results_{n_modifiers}modifiers"
@@ -243,28 +255,30 @@ def write_all_reports(
     lines: List[str] = []
     lines.append("Reults:\n")  # (sic)
 
-    # Build distribution for each optimizer across labels
-    per_method_scores: Dict[str, List[float]] = {}
+    # Collect BEST score from each (seed × modifier) combination
+    per_method_best_scores: Dict[str, List[float]] = {}
     labels = sorted(all_runs_by_label.keys())
 
-    for label_idx, label in enumerate(labels, start=1):
+    for label in labels:
         results = all_runs_by_label[label]
-        # summarize best per method (already scored with qps logic)
-        best_by_method = _summarize_results(results)
-        for method, best_score in best_by_method.items():
-            per_method_scores.setdefault(method, []).append(best_score)
+        for method, runs in results.items():
+            for run in runs:  # Each run is one (seed × modifier) combination
+                # Take the best score from this run (best trial within this seed×modifier)
+                best_score = max((trial.value for trial in run.trials), default=float("-inf"))
+                if best_score != float("-inf"):
+                    per_method_best_scores.setdefault(method, []).append(best_score)
 
-    lines.append("Rules based (optimizers): (target 3) — aggregated across modifiers")
-    for method in sorted(per_method_scores.keys()):
-        arr = per_method_scores[method]
-        if len(arr) == 0:
+    lines.append("Rules based (optimizers): (target 3) — aggregated across all seed×modifier combinations")
+    for method in sorted(per_method_best_scores.keys()):
+        scores = per_method_best_scores[method]
+        if len(scores) == 0:
             avg = mn = mx = 0.0
         else:
-            # average, min-of-best, max-of-best
-            avg = sum(arr) / len(arr)
-            mn = min(arr)
-            mx = max(arr)
-        lines.append(f"{method} {avg:.6f} (min={mn:.6f}, max={mx:.6f}, n={len(arr)})")
+            # average, min, max across ALL evaluations
+            avg = sum(scores) / len(scores)
+            mn = min(scores)
+            mx = max(scores)
+        lines.append(f"{method} {avg:.6f} (min={mn:.6f}, max={mx:.6f}, n={len(scores)})")
 
     lines.append("")
     lines.append(f"[baseline] arch={BASELINE_ARCH} days={EVAL_TRAINING_DAYS}")
@@ -284,7 +298,7 @@ def write_all_reports(
                 for i, run in enumerate(runs):
                     seed_id = run.trials[0].seed if run.trials else i
                     f.write(f"  Seed {seed_id}:\n")
-                    for step, tr in enumerate(run.trials, start=1):
+                    for step, tr in enumerate(run.trials, start=0):
                         arch_str = json.dumps(tr.config.get("arch"))
                         f.write(f"    Step {step}: arch={arch_str}, score={tr.value:.6f}\n")
                 f.write("\n")
@@ -307,7 +321,7 @@ def write_all_reports(
         results = all_runs_by_label[label]
         for method, runs in results.items():
             for run in runs:
-                for step, tr in enumerate(run.trials, start=1):
+                for step, tr in enumerate(run.trials, start=0):
                     arch = tr.config.get("arch")
                     ne, qps, _ = model_for_label.train_model(
                         arch=arch,

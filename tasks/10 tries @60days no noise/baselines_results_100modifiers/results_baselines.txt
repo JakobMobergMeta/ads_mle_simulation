@@ -1,6 +1,6 @@
 Reults:
 
-Rules based (optimizers): (target 3) — aggregated across modifiers
+Rules based (optimizers): (target 3) — aggregated across all seed×modifier combinations
 LogSpaceSimulatedAnnealing 0.009564 (min=0.000452, max=0.037829, n=100)
 Random 0.112403 (min=0.066376, max=0.146511, n=100)
 SimulatedAnnealing 0.021443 (min=0.003092, max=0.068180, n=100)

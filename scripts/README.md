@@ -19,7 +19,7 @@ pip install -e ".[hpo]"
 
 **Command:**
 ```bash
-python scripts/run_experiments.py
+python scripts/run_experiments.py --n-seeds 1
 ```
 
 **What it does:**
