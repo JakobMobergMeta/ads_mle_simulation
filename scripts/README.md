@@ -19,7 +19,7 @@ pip install -e ".[hpo]"
 
 **Command:**
 ```bash
-python scripts/run_experiments.py --n-seeds 1
+python scripts/run_experiments.py --n-seeds 1 --regenerate-modifiers
 ```
 
 **What it does:**

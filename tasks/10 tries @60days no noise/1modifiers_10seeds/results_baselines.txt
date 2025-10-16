@@ -11,4 +11,6 @@ Skopt-RF 0.107692 (min=0.029821, max=0.123161, n=10)
 Skopt-Random 0.103178 (min=0.029821, max=0.123161, n=10)
 TPE 0.112612 (min=0.057076, max=0.123527, n=10)
 
-[baseline] arch=[[256, 256], [512, 512], [256, 256], [64], [64]] days=60
+[baseline] days=60
+Baseline architectures (one per modifier):
+  Modifier 1: [[256, 256], [512, 512], [256, 256], [64], [64]]

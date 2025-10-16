@@ -82,9 +82,9 @@ def generate_random_network_modifiers(
 
     out: Dict[int, List[float]] = {}
     for i in range(num_subarches):
-        c3 = _rand_step(rng, 0.50, 1.00, step)   # flops weight
-        c4 = _rand_step(rng, 0.05, 0.50, step)   # flax  weight
-        c5 = _rand_step(rng, 0.05, 0.50, step)   # depth/“how long”
+        c3 = _rand_step(rng, 0.35, 1.00, step)   # flops weight
+        c4 = _rand_step(rng, 0.05, 0.65, step)   # flax  weight
+        c5 = _rand_step(rng, 0.05, 0.65, step)   # depth/“how long”
         out[i] = [col1[i], col2[i], c3, c4, c5]
     return out
 

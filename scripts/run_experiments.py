@@ -25,6 +25,7 @@ from archopt.modifiers import (
     save_modifiers_csv,
     load_modifiers_csv,
 )
+import random
 
 # -----------------------
 # helpers
@@ -43,6 +44,92 @@ def _mode_tag(soft_qps: bool, soft_qps_tau: float, qps_min: float) -> str:
 
 def _best_trial_score(runlog: RunLog) -> float:
     return max((t.value for t in runlog.trials), default=float("-inf"))
+
+def _generate_valid_baseline(model_api: ModelPerformanceAPI, qps_min: float, seed: int, max_attempts: int = 10000, verbose: bool = False) -> Optional[List[int]]:
+    """Generate a random valid baseline architecture that meets QPS >= qps_min."""
+    rng = random.Random(seed)
+
+    # Try to generate diverse architectures by rejecting the first few valid ones
+    # This ensures we explore more of the architecture space
+    valid_archs = []
+    valid_qps = []
+
+    for attempt in range(max_attempts):
+        # Generate random number of layers (e.g., 3-7 layers)
+        n_layers = rng.randint(3, 7)
+        # Generate random architecture with valid layer sizes
+        # Use a wider range and more options for diversity
+        arch = [rng.choice([32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]) for _ in range(n_layers)]
+
+        try:
+            # Test if this architecture meets QPS requirement
+            ne, qps, _ = model_api.train_model(
+                arch=arch,
+                training_days=EVAL_TRAINING_DAYS,
+                ignore_budget=True,
+            )
+            if verbose and attempt % 100 == 0:
+                print(f"  Attempt {attempt}: arch={arch}, QPS={qps:.2f} (min={qps_min})")
+
+            if qps >= qps_min:
+                valid_archs.append(arch)
+                valid_qps.append(qps)
+                if verbose:
+                    print(f"  ✓ Found valid arch {len(valid_archs)}: {arch}, QPS={qps:.2f}")
+                # Collect up to 10 valid architectures, then pick one randomly
+                if len(valid_archs) >= 10:
+                    chosen_idx = rng.choice(range(len(valid_archs)))
+                    chosen_arch = valid_archs[chosen_idx]
+                    if verbose:
+                        print(f"  → Selected arch with QPS={valid_qps[chosen_idx]:.2f}: {chosen_arch}")
+                    return chosen_arch
+        except Exception as e:
+            # Skip invalid architectures
+            if verbose and attempt % 100 == 0:
+                print(f"  Attempt {attempt}: arch={arch}, Error: {e}")
+            continue
+
+    # If we found at least one valid architecture, return a random one
+    if valid_archs:
+        chosen_idx = rng.choice(range(len(valid_archs)))
+        chosen_arch = valid_archs[chosen_idx]
+        if verbose:
+            print(f"  → Selected from {len(valid_archs)} valid archs, QPS={valid_qps[chosen_idx]:.2f}: {chosen_arch}")
+        return chosen_arch
+
+    # If we couldn't find any valid baseline, return None
+    print(f"Warning: Could not generate valid baseline after {max_attempts} attempts")
+    return None
+
+def save_modifiers_and_baselines_csv(modifiers_list: List[Dict[int, List[float]]], baselines_list: List[List[int]], filepath: Path):
+    """Save both modifiers and baseline architectures to a single CSV."""
+    rows = []
+    for idx, (modifiers, baseline) in enumerate(zip(modifiers_list, baselines_list), start=1):
+        rows.append({
+            "config_id": idx,
+            "baseline_architecture": json.dumps(baseline),
+            "network_modifier": json.dumps(modifiers)
+        })
+    df = pd.DataFrame(rows)
+    df.to_csv(filepath, index=False)
+
+def load_modifiers_and_baselines_csv(filepath: Path) -> Tuple[List[Dict[int, List[float]]], List[List[int]]]:
+    """Load both modifiers and baseline architectures from a single CSV."""
+    df = pd.read_csv(filepath)
+    modifiers_list = []
+    baselines_list = []
+
+    for _, row in df.iterrows():
+        # Load baseline
+        baseline = json.loads(row["baseline_architecture"])
+        baselines_list.append(baseline)
+
+        # Load modifiers - the JSON keys are strings, convert them back to integers
+        modifiers_dict = json.loads(row["network_modifier"])
+        modifiers = {int(k): v for k, v in modifiers_dict.items()}
+        modifiers_list.append(modifiers)
+
+    return modifiers_list, baselines_list
 
 def _summarize_results(results_dict: Dict[str, List[RunLog]]) -> Dict[str, Dict[str, float]]:
     """Aggregate all trial scores across all runs (seeds × modifiers) for each method."""
@@ -84,6 +171,7 @@ def run_all(
     soft_qps_tau: float = 0.15,
     single_default_modifier: bool = False,
     n_seeds: Optional[int] = None,
+    verbose_baseline_gen: bool = False,
 ):
     """
     Run HPO experiments for multiple NETWORK_MODIFIERS sets.
@@ -103,15 +191,6 @@ def run_all(
 
     # Handle single default modifier vs multiple modifiers
     if single_default_modifier:
-        # Use the explicit default NETWORK_MODIFIERS from ModelPerformanceAPI
-        default_modifier = {
-            0: [0.2, 0.2, 1, 0.1, 0.1],
-            1: [0.4, 0.2, 0.7, 0, 0.05],
-            2: [0.1, 0.1, 0.6, 0.4, 0.05],
-            3: [0.2, 0.4, 0.7, 0.3, 0.05],
-            4: [0.1, 0.1, 0.9, 0.1, 0.1]
-        }
-        modifiers_list = [default_modifier]
         results_dir_name = f"1modifiers_{n_seeds_actual}seeds"
     else:
         # Multiple modifiers
@@ -127,25 +206,66 @@ def run_all(
     out_root = (out_root_base / mode_tag).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
-    # --- Load or generate modifiers ---
-    if not single_default_modifier:
-        modifiers_csv_path = results_dir / f"modifiers_{EVAL_TRAINING_DAYS}days_{N_TRIALS}tries_{n_modifier_sets}modifiers.csv"
-        
-        if modifiers_csv_path.exists() and not regenerate_modifiers:
-            print(f"[run_all] Found existing modifiers at {modifiers_csv_path}, loading...")
-            modifiers_list = load_modifiers_csv(modifiers_csv_path)
+    # --- Load or generate modifiers and baselines ---
+    if single_default_modifier:
+        n_configs = 1
+    else:
+        n_configs = n_modifier_sets
+
+    config_csv_path = results_dir / f"configs_{EVAL_TRAINING_DAYS}days_{N_TRIALS}tries_{n_configs}configs.csv"
+
+    if config_csv_path.exists() and not regenerate_modifiers:
+        print(f"[run_all] Found existing configs at {config_csv_path}, loading...")
+        modifiers_list, baselines_list = load_modifiers_and_baselines_csv(config_csv_path)
+    else:
+        if single_default_modifier:
+            # Use the explicit default NETWORK_MODIFIERS from ModelPerformanceAPI
+            default_modifier = {
+                0: [0.2, 0.2, 1, 0.1, 0.1],
+                1: [0.4, 0.2, 0.7, 0, 0.05],
+                2: [0.1, 0.1, 0.6, 0.4, 0.05],
+                3: [0.2, 0.4, 0.7, 0.3, 0.05],
+                4: [0.1, 0.1, 0.9, 0.1, 0.1]
+            }
+            modifiers_list = [default_modifier]
+            baselines_list = [BASELINE_ARCH]  # Use default baseline for single default modifier
+            print("[run_all] Using single default modifier (no network modifications)")
         else:
-            if modifiers_csv_path.exists() and regenerate_modifiers:
-                print(f"[run_all] Regenerating modifiers (overwriting {modifiers_csv_path})...")
+            if config_csv_path.exists() and regenerate_modifiers:
+                print(f"[run_all] Regenerating configs (overwriting {config_csv_path})...")
             else:
-                print(f"[run_all] No modifiers file found. Generating {n_modifier_sets} sets...")
+                print(f"[run_all] No config file found. Generating {n_modifier_sets} sets...")
+
             modifiers_list = generate_random_modifiers_list(
                 n_sets=n_modifier_sets, step=0.05, seed=seed,
             )
-            save_modifiers_csv(modifiers_list, modifiers_csv_path)
-            print(f"[run_all] Saved {len(modifiers_list)} modifier sets to {modifiers_csv_path}")
-    else:
-        print("[run_all] Using single default modifier (no network modifications)")
+
+            # Generate baselines for each modifier
+            print(f"[run_all] Generating baselines for {len(modifiers_list)} modifier sets...")
+            baselines_list = []
+            for idx, modifiers in enumerate(modifiers_list):
+                if verbose_baseline_gen:
+                    print(f"\n[run_all] Generating baseline for modifier set {idx+1}/{len(modifiers_list)}...")
+                # Create a temporary model API with this modifier to generate valid baseline
+                cfg = {
+                    "GLOBAL_NOISE_SCALE": 0.0,
+                    "BASELINE_ARCH": BASELINE_ARCH,
+                    "BASELINE_DAY": EVAL_TRAINING_DAYS,
+                    "NETWORK_MODIFIERS": modifiers,
+                }
+                temp_model = ModelPerformanceAPI(cfg)
+                # Use a large multiplier to create more variance in baseline seeds
+                baseline_seed = seed * 10000 + idx * 123
+                baseline_arch = _generate_valid_baseline(temp_model, qps_min, seed=baseline_seed, verbose=verbose_baseline_gen)
+                if baseline_arch is None:
+                    # Fallback to default BASELINE_ARCH if generation fails
+                    print(f"[run_all] Using fallback BASELINE_ARCH for modifier set {idx+1}")
+                    baseline_arch = BASELINE_ARCH
+                baselines_list.append(baseline_arch)
+
+        # Save combined config file
+        save_modifiers_and_baselines_csv(modifiers_list, baselines_list, config_csv_path)
+        print(f"[run_all] Saved {len(modifiers_list)} configs (modifiers + baselines) to {config_csv_path}")
 
     print(f"[run_all] Using {n_seeds_actual} seeds: {seeds_to_use}")
 
@@ -181,9 +301,12 @@ def run_all(
         else:
             label = f"modifiers_{idx:02d}"
 
+        # Get the corresponding baseline for this modifier
+        baseline_for_modifier = baselines_list[idx - 1]
+
         cfg = {
             "GLOBAL_NOISE_SCALE": 0.0,
-            "BASELINE_ARCH": BASELINE_ARCH,
+            "BASELINE_ARCH": baseline_for_modifier,
             "BASELINE_DAY": EVAL_TRAINING_DAYS,
             "NETWORK_MODIFIERS": modifiers,
         }
@@ -204,7 +327,7 @@ def run_all(
             results[sug.name] = []
             for s in seeds_to_use:
                 # Run N_TRIALS + 1 total: step 0 = baseline, steps 1-N_TRIALS = additional trials
-                run_result = bench.run(sug, n_trials=N_TRIALS + 1, seed=s, initial_arch=BASELINE_ARCH)
+                run_result = bench.run(sug, n_trials=N_TRIALS + 1, seed=s, initial_arch=baseline_for_modifier)
                 results[sug.name].append(run_result)
 
         out_dir = out_root / label
@@ -220,7 +343,7 @@ def run_all(
 
         all_runs[label] = results
 
-    return all_runs, modifiers_list, mode_tag, results_dir
+    return all_runs, modifiers_list, baselines_list, mode_tag, results_dir
 
 # -----------------------
 # reports
@@ -228,6 +351,7 @@ def run_all(
 def write_all_reports(
     all_runs_by_label: Dict[str, Dict[str, List[RunLog]]],
     modifiers_list: List[Dict[int, List[float]]],
+    baselines_list: List[List[int]],
     results_dir: Path,
     *,
     qps_min: float,
@@ -282,7 +406,10 @@ def write_all_reports(
         lines.append(f"{method} {avg:.6f} (min={mn:.6f}, max={mx:.6f}, n={len(scores)})")
 
     lines.append("")
-    lines.append(f"[baseline] arch={BASELINE_ARCH} days={EVAL_TRAINING_DAYS}")
+    lines.append(f"[baseline] days={EVAL_TRAINING_DAYS}")
+    lines.append("Baseline architectures (one per modifier):")
+    for idx, baseline in enumerate(baselines_list, start=1):
+        lines.append(f"  Modifier {idx}: {baseline}")
 
     with baseline_txt.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -310,10 +437,11 @@ def write_all_reports(
     rows: List[Dict] = []
     for idx, label in enumerate(labels, start=1):
         modifiers = modifiers_list[idx - 1]
+        baseline = baselines_list[idx - 1]
         # rebuild the model per label to ensure consistency
         cfg = {
             "GLOBAL_NOISE_SCALE": 0.0,
-            "BASELINE_ARCH": BASELINE_ARCH,
+            "BASELINE_ARCH": baseline,
             "BASELINE_DAY": EVAL_TRAINING_DAYS,
             "NETWORK_MODIFIERS": modifiers,
         }
@@ -331,7 +459,7 @@ def write_all_reports(
                     )
                     score = float(model_for_label.get_score(ne))
                     rows.append({
-                        "ModeTag": mode_tag,
+                        "competition": "10tries_60days_no_noise",
                         "ModifiersLabel": label,
                         "Competitor": method,
                         "seed": tr.seed,
@@ -345,7 +473,7 @@ def write_all_reports(
 
     df = pd.DataFrame(
         rows,
-        columns=["ModeTag","ModifiersLabel","Competitor","seed","step","Trial","Arch","score","qps","ne"]
+        columns=["competition","ModifiersLabel","Competitor","seed","step","Trial","Arch","score","qps","ne"]
     )
     df.to_csv(flat_csv, index=False)
     print(f"Saved: {flat_csv.resolve()}")
@@ -406,9 +534,14 @@ def main():
         default=None,
         help="Number of seeds to use (overrides config SEEDS). If not specified, uses all seeds from config.",
     )
+    parser.add_argument(
+        "--verbose-baseline-gen",
+        action="store_true",
+        help="Print verbose output during baseline generation (shows QPS values and attempts).",
+    )
     args = parser.parse_args()
 
-    all_runs, modifiers_list, mode_tag, results_dir = run_all(
+    all_runs, modifiers_list, baselines_list, mode_tag, results_dir = run_all(
         root_dir=args.root_dir,
         n_modifier_sets=args.n_modifiers,
         seed=args.seed,
@@ -418,11 +551,13 @@ def main():
         soft_qps_tau=args.soft_qps_tau,
         single_default_modifier=args.single_default_modifier,
         n_seeds=args.n_seeds,
+        verbose_baseline_gen=args.verbose_baseline_gen,
     )
 
     write_all_reports(
         all_runs_by_label=all_runs,
         modifiers_list=modifiers_list,
+        baselines_list=baselines_list,
         results_dir=results_dir,
         qps_min=args.qps_min,
         mode_tag=mode_tag,
