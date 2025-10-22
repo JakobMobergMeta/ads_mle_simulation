@@ -1,15 +1,15 @@
 Reults:
 
 Rules based (optimizers): (target 3) — aggregated across all seed×modifier combinations
-LogSpaceSimulatedAnnealing 0.054004 (min=0.006144, max=0.120476, n=10)
-Random 0.096525 (min=0.001450, max=0.123632, n=10)
-SimulatedAnnealing 0.066538 (min=0.007081, max=0.114792, n=10)
-Skopt-ET 0.097888 (min=0.027199, max=0.129240, n=10)
-Skopt-GBRT 0.095838 (min=0.045931, max=0.125231, n=10)
-Skopt-GP 0.101903 (min=0.073567, max=0.124663, n=10)
-Skopt-RF 0.098039 (min=0.041906, max=0.128656, n=10)
-Skopt-Random 0.094269 (min=0.053218, max=0.125389, n=10)
-TPE 0.103093 (min=0.030000, max=0.127968, n=10)
+LogSpaceSimulatedAnnealing 0.077388 (min=0.010574, max=0.120783, n=10)
+Random 0.111768 (min=0.081519, max=0.121413, n=10)
+SimulatedAnnealing 0.076461 (min=0.023342, max=0.120447, n=10)
+Skopt-ET 0.115477 (min=0.097883, max=0.122551, n=10)
+Skopt-GBRT 0.113228 (min=0.077112, max=0.122551, n=10)
+Skopt-GP 0.117562 (min=0.106650, max=0.120888, n=10)
+Skopt-RF 0.115969 (min=0.096247, max=0.122551, n=10)
+Skopt-Random 0.115035 (min=0.098364, max=0.122551, n=10)
+TPE 0.111381 (min=0.081559, max=0.121653, n=10)
 
 [baseline] days=60
 Baseline architectures (one per modifier):
