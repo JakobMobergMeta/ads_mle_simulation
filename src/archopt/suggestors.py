@@ -5,9 +5,9 @@ import numpy as np
 
 from .networks import (
     # use powers-of-two ladder
-    sample_arch_pow2 as sample_arch,
+    sample_arch_pow2,
     sample_subarch_pow2,  # needed for LogSpaceSimulatedAnnealingSuggestor
-    neighbor_arch_pow2 as neighbor_arch,
+    neighbor_arch_pow2,
     validate_arch_nested,
     POW2_WIDTHS as WIDTH_LEVELS,  # list of allowed widths (2^n)
     MIN_SUBARCHES, MAX_SUBARCHES,
@@ -15,6 +15,25 @@ from .networks import (
     # encoding helpers
     arch_to_params, params_to_arch, params_to_x, x_to_params,
 )
+
+# Global flag to control architecture constraints
+# When True: forces exactly MAX_SUBARCHES subarchitectures, allows variable depth per subarch
+# When False: allows variable number of subarchitectures (1 to MAX_SUBARCHES), allows variable depth
+FIXED_NUM_SUBARCHES_MODE = True
+
+def sample_arch(rng: np.random.RandomState) -> List[List[int]]:
+    """Wrapper that respects FIXED_NUM_SUBARCHES_MODE"""
+    return sample_arch_pow2(rng, fixed_num_subarches=FIXED_NUM_SUBARCHES_MODE)
+
+def neighbor_arch(
+    rng: np.random.RandomState,
+    arch: List[List[int]],
+    *,
+    k_max: int = 1,
+    force_replace: bool = False,
+) -> List[List[int]]:
+    """Wrapper that respects FIXED_NUM_SUBARCHES_MODE"""
+    return neighbor_arch_pow2(rng, arch, k_max=k_max, force_replace=force_replace, fixed_num_subarches=FIXED_NUM_SUBARCHES_MODE)
 
 class Suggestor:
     name: str = "Suggestor"
@@ -201,11 +220,11 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
     def _propose_neighbor_logspace(self, rng: np.random.RandomState, arch: List[List[int]]) -> List[List[int]]:
         """Propose neighbor using uniform moves in log₂ space"""
         new_arch = [sub[:] for sub in arch]  # deep copy
-        
+
         # 1) shake (replace one sub-arch) with small prob
         if rng.rand() < self.shake_prob:
             sub_idx = rng.randint(len(new_arch))
-            new_arch[sub_idx] = sample_subarch_pow2(rng)
+            new_arch[sub_idx] = sample_subarch_pow2(rng, fixed_depth=False)
             return new_arch
 
         # 2) uniform log-space moves with retries
@@ -213,22 +232,22 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
             # Choose random sub-arch and operation
             sub_idx = rng.randint(len(new_arch))
             sub = new_arch[sub_idx]
-            
+
             if rng.rand() < 0.7:  # width change (70% prob)
                 if len(sub) > 0:
                     current_width = sub[0]  # assuming uniform width per sub
                     current_log2 = self._width_to_log2(current_width)
-                    
+
                     # Uniform step in log₂ space
                     delta = rng.randint(-self.k_max, self.k_max + 1)
                     if delta != 0:  # ensure we make a change
                         new_log2 = current_log2 + delta
                         new_width = self._log2_to_width(new_log2)
-                        
+
                         if new_width != current_width:  # valid change
                             new_arch[sub_idx] = [new_width] * len(sub)
                             return new_arch
-            
+
             else:  # depth change (30% prob)
                 if rng.rand() < 0.5 and len(sub) < MAX_LAYERS_PER_SUB:
                     # add layer
@@ -244,7 +263,7 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
             alt = sample_arch(rng)
             if alt != arch:
                 return alt
-        
+
         return arch
 
     def ask(self, rng, state):
@@ -343,7 +362,11 @@ try:
 
         def ask(self, rng: np.random.RandomState, state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             trial = self._study.ask()
-            n_sub = trial.suggest_int("n_sub", MIN_SUBARCHES, MAX_SUBARCHES)
+            if FIXED_NUM_SUBARCHES_MODE:
+                # Force exactly MAX_SUBARCHES subarchitectures
+                n_sub = MAX_SUBARCHES
+            else:
+                n_sub = trial.suggest_int("n_sub", MIN_SUBARCHES, MAX_SUBARCHES)
             for i in range(MAX_SUBARCHES):
                 trial.suggest_int(f"depth_{i}", MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB)
                 trial.suggest_int(f"widx_{i}", 0, len(WIDTH_LEVELS) - 1)
@@ -385,13 +408,27 @@ class SkoptBOSuggestor(Suggestor):
         self._last_x = None
 
         # Search space: n_sub + per-sub depth + per-sub width-index (over POW2 ladder)
-        self._space = [
-            self._Integer(MIN_SUBARCHES, MAX_SUBARCHES, name="n_sub"),
-            *[self._Integer(MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB, name=f"depth_{i}")
-              for i in range(MAX_SUBARCHES)],
-            *[self._Integer(0, len(WIDTH_LEVELS) - 1, name=f"widx_{i}")
-              for i in range(MAX_SUBARCHES)],
-        ]
+        if FIXED_NUM_SUBARCHES_MODE:
+            # When number of subarches is fixed, we don't need n_sub dimension in the search space
+            # We'll set it to MAX_SUBARCHES when converting to architecture
+            depth_dims = [self._Integer(MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB, name=f"depth_{i}")
+                          for i in range(MAX_SUBARCHES)]
+            self._space = [
+                *depth_dims,
+                *[self._Integer(0, len(WIDTH_LEVELS) - 1, name=f"widx_{i}")
+                  for i in range(MAX_SUBARCHES)],
+            ]
+            self._fixed_num_subarches = True
+        else:
+            depth_dims = [self._Integer(MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB, name=f"depth_{i}")
+                          for i in range(MAX_SUBARCHES)]
+            self._space = [
+                self._Integer(MIN_SUBARCHES, MAX_SUBARCHES, name="n_sub"),
+                *depth_dims,
+                *[self._Integer(0, len(WIDTH_LEVELS) - 1, name=f"widx_{i}")
+                  for i in range(MAX_SUBARCHES)],
+            ]
+            self._fixed_num_subarches = False
 
     def reset(self, seed: int):
         self.opt = self._Optimizer(
@@ -404,7 +441,21 @@ class SkoptBOSuggestor(Suggestor):
 
     def ask(self, rng: np.random.RandomState, state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         x = self.opt.ask()
-        params = x_to_params(x)
+
+        if self._fixed_num_subarches:
+            # When in fixed num subarches mode, x only contains: [depth_0, ..., depth_N, widx_0, ..., widx_N]
+            # We need to construct params with fixed n_sub
+            params = {"n_sub": MAX_SUBARCHES}
+            # Set depths from x (first MAX_SUBARCHES values)
+            for i in range(MAX_SUBARCHES):
+                params[f"depth_{i}"] = int(x[i])
+            # Set width indices from x (next MAX_SUBARCHES values)
+            for i in range(MAX_SUBARCHES):
+                params[f"widx_{i}"] = int(x[MAX_SUBARCHES + i])
+        else:
+            # Normal mode: x contains [n_sub, depth_0, ..., depth_N, widx_0, ..., widx_N]
+            params = x_to_params(x)
+
         cfg = {"arch": params_to_arch(params)}
         self._last_x = x
         return cfg
@@ -418,5 +469,14 @@ class SkoptBOSuggestor(Suggestor):
         else:
             # Encode the provided architecture back to x
             params = arch_to_params(config["arch"])
-            x = params_to_x(params)
+            if self._fixed_num_subarches:
+                # When in fixed num subarches mode, x only contains: [depth_0, ..., depth_N, widx_0, ..., widx_N]
+                x = []
+                for i in range(MAX_SUBARCHES):
+                    x.append(params[f"depth_{i}"])
+                for i in range(MAX_SUBARCHES):
+                    x.append(params[f"widx_{i}"])
+            else:
+                # Normal mode
+                x = params_to_x(params)
         self.opt.tell(x, y)

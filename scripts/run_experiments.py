@@ -13,6 +13,7 @@ from archopt.config import (
 from archopt.evaluation import make_evaluator
 from archopt.benchmark import Benchmark, RunLog
 from archopt.logging_utils import save_runs, save_arches_per_method, plot_runs
+import archopt.suggestors as suggestors_module
 from archopt.suggestors import (
     RandomSuggestor,
     SimulatedAnnealingSuggestor,
@@ -25,6 +26,12 @@ from archopt.modifiers import (
     save_modifiers_csv,
     load_modifiers_csv,
 )
+from archopt.networks import (
+    sample_arch_pow2,     # nested, powers-of-two sampler
+    validate_arch_nested, # sanity checks
+)
+import numpy as np
+
 import random
 
 # -----------------------
@@ -45,61 +52,158 @@ def _mode_tag(soft_qps: bool, soft_qps_tau: float, qps_min: float) -> str:
 def _best_trial_score(runlog: RunLog) -> float:
     return max((t.value for t in runlog.trials), default=float("-inf"))
 
-def _generate_valid_baseline(model_api: ModelPerformanceAPI, qps_min: float, seed: int, max_attempts: int = 10000, verbose: bool = False) -> Optional[List[int]]:
-    """Generate a random valid baseline architecture that meets QPS >= qps_min."""
-    rng = random.Random(seed)
+def _derive_competition_name(folder_path: Path, root_dir: Path) -> str:
+    """
+    Derive competition name from folder path by taking the path relative to root_dir
+    and joining directory names with "-".
 
-    # Try to generate diverse architectures by rejecting the first few valid ones
-    # This ensures we explore more of the architecture space
-    valid_archs = []
-    valid_qps = []
+    Example:
+        folder = /path/to/tasks/20 tries @60days no noise/skewed_modifiers_10seeds
+        root = /path/to
+        returns: tasks-20 tries @60days no noise-skewed_modifiers_10seeds
+    """
+    try:
+        # Get the path relative to root
+        rel_path = folder_path.relative_to(root_dir)
+        # Join parts with "-" instead of "/"
+        return str(rel_path).replace("/", "-")
+    except ValueError:
+        # If folder is not relative to root, just use the folder name
+        return folder_path.name
+
+# def _generate_valid_baseline(model_api: ModelPerformanceAPI, qps_min: float, seed: int, max_attempts: int = 10000, verbose: bool = False) -> Optional[List[int]]:
+#     """Generate a random valid baseline architecture that meets QPS >= qps_min."""
+#     rng = random.Random(seed)
+
+#     # Try to generate diverse architectures by rejecting the first few valid ones
+#     # This ensures we explore more of the architecture space
+#     valid_archs = []
+#     valid_qps = []
+
+#     for attempt in range(max_attempts):
+#         # Generate random number of layers (e.g., 3-7 layers)
+#         n_layers = rng.randint(3, 7)
+#         # Generate random architecture with valid layer sizes
+#         # Use a wider range and more options for diversity
+#         arch = [rng.choice([32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]) for _ in range(n_layers)]
+#         print(f"Attempt {attempt}: arch={arch}")
+
+#         try:
+#             # Test if this architecture meets QPS requirement
+#             ne, qps, _ = model_api.train_model(
+#                 arch=arch,
+#                 training_days=EVAL_TRAINING_DAYS,
+#                 ignore_budget=True,
+#             )
+#             if verbose and attempt % 100 == 0:
+#                 print(f"  Attempt {attempt}: arch={arch}, QPS={qps:.2f} (min={qps_min})")
+
+#             if qps >= qps_min:
+#                 valid_archs.append(arch)
+#                 valid_qps.append(qps)
+#                 if verbose:
+#                     print(f"  ✓ Found valid arch {len(valid_archs)}: {arch}, QPS={qps:.2f}")
+#                 # Collect up to 10 valid architectures, then pick one randomly
+#                 if len(valid_archs) >= 10:
+#                     chosen_idx = rng.choice(range(len(valid_archs)))
+#                     chosen_arch = valid_archs[chosen_idx]
+#                     if verbose:
+#                         print(f"  → Selected arch with QPS={valid_qps[chosen_idx]:.2f}: {chosen_arch}")
+#                     return chosen_arch
+#         except Exception as e:
+#             # Skip invalid architectures
+#             if verbose and attempt % 100 == 0:
+#                 print(f"  Attempt {attempt}: arch={arch}, Error: {e}")
+#             continue
+
+#     # If we found at least one valid architecture, return a random one
+#     if valid_archs:
+#         chosen_idx = rng.choice(range(len(valid_archs)))
+#         chosen_arch = valid_archs[chosen_idx]
+#         if verbose:
+#             print(f"  → Selected from {len(valid_archs)} valid archs, QPS={valid_qps[chosen_idx]:.2f}: {chosen_arch}")
+#         return chosen_arch
+
+#     # If we couldn't find any valid baseline, return None
+#     print(f"Warning: Could not generate valid baseline after {max_attempts} attempts")
+#     return None
+
+def _generate_valid_baseline(
+    model_api: ModelPerformanceAPI,
+    qps_min: float,
+    seed: int,
+    max_attempts: int = 10000,
+    verbose: bool = False
+) -> Optional[List[List[int]]]:
+    """
+    Generate a random **nested** baseline architecture that meets QPS >= qps_min.
+    - Uses powers-of-two widths and nested format: List[List[int]]
+    - Samples via archopt.networks.sample_arch_pow2
+    - Collects multiple valid candidates for diversity, then picks one.
+    """
+    rng = np.random.RandomState(seed)
+
+    valid_archs: List[List[List[int]]] = []
+    valid_qps: List[float] = []
+    seen: set = set()  # avoid re-evaluating duplicates
 
     for attempt in range(max_attempts):
-        # Generate random number of layers (e.g., 3-7 layers)
-        n_layers = rng.randint(3, 7)
-        # Generate random architecture with valid layer sizes
-        # Use a wider range and more options for diversity
-        arch = [rng.choice([32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]) for _ in range(n_layers)]
+        # Sample a nested, powers-of-two arch (e.g., [[128,128,128],[256,256]])
+        arch = sample_arch_pow2(rng)
+
+        # De-duplicate by a tuple-ized key
+        key = tuple(tuple(sub) for sub in arch)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # (Optional) print progress
+        if verbose and attempt % 100 == 0:
+            print(f"  Attempt {attempt}: arch={arch}")
 
         try:
-            # Test if this architecture meets QPS requirement
+            # Sanity check against global constraints
+            validate_arch_nested(arch)
+
+            # Evaluate QPS feasibility
             ne, qps, _ = model_api.train_model(
                 arch=arch,
                 training_days=EVAL_TRAINING_DAYS,
                 ignore_budget=True,
             )
+
             if verbose and attempt % 100 == 0:
-                print(f"  Attempt {attempt}: arch={arch}, QPS={qps:.2f} (min={qps_min})")
+                print(f"    -> QPS={qps:.2f} (min={qps_min})")
 
             if qps >= qps_min:
                 valid_archs.append(arch)
                 valid_qps.append(qps)
                 if verbose:
-                    print(f"  ✓ Found valid arch {len(valid_archs)}: {arch}, QPS={qps:.2f}")
-                # Collect up to 10 valid architectures, then pick one randomly
+                    print(f"    ✓ Valid #{len(valid_archs)}: QPS={qps:.2f}, arch={arch}")
+
+                # Gather up to 10 valid candidates to encourage diversity
                 if len(valid_archs) >= 10:
-                    chosen_idx = rng.choice(range(len(valid_archs)))
-                    chosen_arch = valid_archs[chosen_idx]
+                    idx = int(rng.randint(0, len(valid_archs)))
                     if verbose:
-                        print(f"  → Selected arch with QPS={valid_qps[chosen_idx]:.2f}: {chosen_arch}")
-                    return chosen_arch
+                        print(f"    → Selected (from 10) QPS={valid_qps[idx]:.2f}: {valid_archs[idx]}")
+                    return valid_archs[idx]
+
         except Exception as e:
-            # Skip invalid architectures
+            # Skip invalid / failing samples; optionally log
             if verbose and attempt % 100 == 0:
-                print(f"  Attempt {attempt}: arch={arch}, Error: {e}")
+                print(f"    ! Error on attempt {attempt}: {e}")
             continue
 
-    # If we found at least one valid architecture, return a random one
+    # If no 10-candidate pool, return a random one among found valids
     if valid_archs:
-        chosen_idx = rng.choice(range(len(valid_archs)))
-        chosen_arch = valid_archs[chosen_idx]
+        idx = int(rng.randint(0, len(valid_archs)))
         if verbose:
-            print(f"  → Selected from {len(valid_archs)} valid archs, QPS={valid_qps[chosen_idx]:.2f}: {chosen_arch}")
-        return chosen_arch
+            print(f"  → Selected (from {len(valid_archs)} valids) QPS={valid_qps[idx]:.2f}: {valid_archs[idx]}")
+        return valid_archs[idx]
 
-    # If we couldn't find any valid baseline, return None
     print(f"Warning: Could not generate valid baseline after {max_attempts} attempts")
     return None
+
 
 def save_modifiers_and_baselines_csv(modifiers_list: List[Dict[int, List[float]]], baselines_list: List[List[int]], filepath: Path):
     """Save both modifiers and baseline architectures to a single CSV."""
@@ -130,6 +234,39 @@ def load_modifiers_and_baselines_csv(filepath: Path) -> Tuple[List[Dict[int, Lis
         modifiers_list.append(modifiers)
 
     return modifiers_list, baselines_list
+
+def load_full_config_csv(filepath: Path) -> Tuple[List[Dict[int, List[float]]], List[List[int]], int, int, int, float]:
+    """Load modifiers, baselines, and experiment parameters from a single CSV.
+
+    Returns:
+        modifiers_list: List of network modifier dictionaries
+        baselines_list: List of baseline architectures
+        num_trials: Number of trials to run
+        num_seeds: Number of seeds to use
+        days: Number of training days
+        qps_min: Minimum QPS requirement
+    """
+    df = pd.read_csv(filepath)
+    modifiers_list = []
+    baselines_list = []
+
+    # Get experiment parameters from the first row (should be same for all rows)
+    num_trials = int(df.iloc[0]["num_trials"])
+    num_seeds = int(df.iloc[0]["num_seeds"])
+    days = int(df.iloc[0]["days"])
+    qps_min = float(df.iloc[0]["qps_min"]) if "qps_min" in df.columns else 3500.0
+
+    for _, row in df.iterrows():
+        # Load baseline
+        baseline = json.loads(row["baseline_architecture"])
+        baselines_list.append(baseline)
+
+        # Load modifiers - the JSON keys are strings, convert them back to integers
+        modifiers_dict = json.loads(row["network_modifier"])
+        modifiers = {int(k): v for k, v in modifiers_dict.items()}
+        modifiers_list.append(modifiers)
+
+    return modifiers_list, baselines_list, num_trials, num_seeds, days, qps_min
 
 def _summarize_results(results_dict: Dict[str, List[RunLog]]) -> Dict[str, Dict[str, float]]:
     """Aggregate all trial scores across all runs (seeds × modifiers) for each method."""
@@ -172,11 +309,17 @@ def run_all(
     single_default_modifier: bool = False,
     n_seeds: Optional[int] = None,
     verbose_baseline_gen: bool = False,
+    random_baselines: bool = False,
+    num_layers: int = 5,
+    fixed_depth: bool = True,
 ):
     """
     Run HPO experiments for multiple NETWORK_MODIFIERS sets.
     Results saved under: <root>/<OUT_ROOT.name>/<mode_tag>/modifiers_XX/
     """
+    # Set global flag for suggestors
+    suggestors_module.FIXED_NUM_SUBARCHES_MODE = fixed_depth
+
     root = Path(root_dir).resolve()
 
     # Determine which seeds to use first so we know the count
@@ -237,7 +380,7 @@ def run_all(
                 print(f"[run_all] No config file found. Generating {n_modifier_sets} sets...")
 
             modifiers_list = generate_random_modifiers_list(
-                n_sets=n_modifier_sets, step=0.05, seed=seed,
+                n_sets=n_modifier_sets, num_subarches=num_layers, step=0.05, seed=seed,
             )
 
             # Generate baselines for each modifier
@@ -281,16 +424,16 @@ def run_all(
     except Exception as e:
         print("[info] Optuna not installed; skipping TPESuggestor.")
     # Optional: scikit-optimize baselines
-    try:
-        suggestors += [
-            SkoptBOSuggestor("dummy", name="Skopt-Random"),
-            SkoptBOSuggestor("GP",    name="Skopt-GP"),
-            SkoptBOSuggestor("RF",    name="Skopt-RF"),
-            SkoptBOSuggestor("ET",    name="Skopt-ET"),
-            SkoptBOSuggestor("GBRT",  name="Skopt-GBRT"),
-        ]
-    except Exception:
-        print("[info] scikit-optimize not installed; skipping Skopt* baselines.")
+    # try:
+    suggestors += [
+        SkoptBOSuggestor("dummy", name="Skopt-Random"),
+        SkoptBOSuggestor("GP",    name="Skopt-GP"),
+        SkoptBOSuggestor("RF",    name="Skopt-RF"),
+        SkoptBOSuggestor("ET",    name="Skopt-ET"),
+        SkoptBOSuggestor("GBRT",  name="Skopt-GBRT"),
+    ]
+    # except Exception:
+    #     print("[info] scikit-optimize not installed; skipping Skopt* baselines.")
 
     # --- Run experiments for each modifier set ---
     all_runs: Dict[str, Dict[str, List[RunLog]]] = {}
@@ -356,6 +499,7 @@ def write_all_reports(
     *,
     qps_min: float,
     mode_tag: str,
+    competition_name: str = "10tries_60days_no_noise",
 ):
     """
     Aggregate across all NETWORK_MODIFIERS.
@@ -371,9 +515,9 @@ def write_all_reports(
         details_txt = report_dir / f"results_details_baselines__{mode_tag}.txt"
     # Generate filename based on mode - no mode tag for hard QPS
     if mode_tag.startswith("hardQPS"):
-        flat_csv = report_dir / f"Sim_ML_Bench_l3_60days_{N_TRIALS}tries_baselines.csv"
+        flat_csv = report_dir / "results_baselines.csv"
     else:
-        flat_csv = report_dir / f"Sim_ML_Bench_l3_60days_{N_TRIALS}tries_baselines__{mode_tag}.csv"
+        flat_csv = report_dir / f"results_baselines__{mode_tag}.csv"
 
     # --- Text summary (average/min/max of best-valid-QPS per optimizer across modifiers) ---
     # Only “best trials” that meet QPS ≥ qps_min are considered (handled in evaluation/reporting flow).
@@ -459,7 +603,7 @@ def write_all_reports(
                     )
                     score = float(model_for_label.get_score(ne))
                     rows.append({
-                        "competition": "10tries_60days_no_noise",
+                        "competition": competition_name,
                         "ModifiersLabel": label,
                         "Competitor": method,
                         "seed": tr.seed,
@@ -478,11 +622,281 @@ def write_all_reports(
     df.to_csv(flat_csv, index=False)
     print(f"Saved: {flat_csv.resolve()}")
 
+    # --- Best results per config (averaged over seeds) CSV ---
+    # Generate filename for best results
+    if mode_tag.startswith("hardQPS"):
+        best_csv = report_dir / "results_best_per_config.csv"
+    else:
+        best_csv = report_dir / f"results_best_per_config__{mode_tag}.csv"
+
+    # Collect best results for each (config, method) combination, aggregated over seeds
+    from collections import defaultdict
+
+    # Dictionary to collect scores per (config, method)
+    config_method_scores: Dict[tuple, List[float]] = defaultdict(list)
+
+    for idx, label in enumerate(labels, start=1):
+        modifiers = modifiers_list[idx - 1]
+        baseline = baselines_list[idx - 1]
+        # rebuild the model per label to ensure consistency
+        cfg = {
+            "GLOBAL_NOISE_SCALE": 0.0,
+            "BASELINE_ARCH": baseline,
+            "BASELINE_DAY": EVAL_TRAINING_DAYS,
+            "NETWORK_MODIFIERS": modifiers,
+        }
+        model_for_label = ModelPerformanceAPI(cfg)
+
+        results = all_runs_by_label[label]
+        for method, runs in results.items():
+            for run in runs:
+                # Find the best trial in this run (config+seed+method combination)
+                best_trial = max(run.trials, key=lambda t: t.value)
+
+                # Store the score for aggregation
+                config_method_scores[(idx, label, method)].append(best_trial.value)
+
+    # Now aggregate the results per config+method
+    best_rows: List[Dict] = []
+    for (config_id, label, method), scores in config_method_scores.items():
+        if scores:
+            avg_score = sum(scores) / len(scores)
+            min_score = min(scores)
+            max_score = max(scores)
+
+            best_rows.append({
+                "competition": competition_name,
+                "config_id": config_id,
+                "ModifiersLabel": label,
+                "Competitor": method,
+                "num_seeds": len(scores),
+                "avg_score": float(avg_score),
+                "min_score": float(min_score),
+                "max_score": float(max_score),
+                "score_range": f"[{min_score:.6f}, {max_score:.6f}]",
+            })
+
+    best_df = pd.DataFrame(
+        best_rows,
+        columns=["competition","config_id","ModifiersLabel","Competitor","num_seeds","avg_score","min_score","max_score","score_range"]
+    )
+    best_df = best_df.sort_values(["config_id", "Competitor"])
+    best_df.to_csv(best_csv, index=False)
+    print(f"Saved best results per config (averaged over seeds): {best_csv.resolve()}")
+
+    # --- Best results per config+seed CSV ---
+    # Generate filename for per-seed results
+    if mode_tag.startswith("hardQPS"):
+        best_per_seed_csv = report_dir / "results_best_per_config_seed.csv"
+    else:
+        best_per_seed_csv = report_dir / f"results_best_per_config_seed__{mode_tag}.csv"
+
+    # Collect best results for each (config, seed, method) combination
+    best_per_seed_rows: List[Dict] = []
+
+    for idx, label in enumerate(labels, start=1):
+        modifiers = modifiers_list[idx - 1]
+        baseline = baselines_list[idx - 1]
+        # rebuild the model per label to ensure consistency
+        cfg = {
+            "GLOBAL_NOISE_SCALE": 0.0,
+            "BASELINE_ARCH": baseline,
+            "BASELINE_DAY": EVAL_TRAINING_DAYS,
+            "NETWORK_MODIFIERS": modifiers,
+        }
+        model_for_label = ModelPerformanceAPI(cfg)
+
+        results = all_runs_by_label[label]
+        for method, runs in results.items():
+            for run in runs:
+                # Find the best trial in this run (config+seed+method combination)
+                best_trial = max(run.trials, key=lambda t: t.value)
+
+                # Get the seed from the trial
+                seed = best_trial.seed
+
+                # Recompute metrics for the best architecture
+                arch = best_trial.config.get("arch")
+                ne, qps, _ = model_for_label.train_model(
+                    arch=arch,
+                    training_days=EVAL_TRAINING_DAYS,
+                    ignore_budget=True,
+                )
+
+                best_per_seed_rows.append({
+                    "competition": competition_name,
+                    "config_id": idx,
+                    "ModifiersLabel": label,
+                    "Competitor": method,
+                    "seed": seed,
+                    "best_score": float(best_trial.value),
+                    "best_qps": float(qps),
+                    "best_ne": float(ne),
+                    "best_arch": json.dumps(arch),
+                })
+
+    best_per_seed_df = pd.DataFrame(
+        best_per_seed_rows,
+        columns=["competition","config_id","ModifiersLabel","Competitor","seed","best_score","best_qps","best_ne","best_arch"]
+    )
+    best_per_seed_df = best_per_seed_df.sort_values(["config_id", "Competitor", "seed"])
+    best_per_seed_df.to_csv(best_per_seed_csv, index=False)
+    print(f"Saved best results per config+seed: {best_per_seed_csv.resolve()}")
+
+def run_from_folder(
+    folder_path: str,
+    *,
+    qps_min: float = 3500.0,
+    soft_qps: bool = False,
+    soft_qps_tau: float = 0.15,
+    fixed_depth: bool = True,
+):
+    """
+    Run experiments from a folder containing configs.csv.
+    The config file should have columns: config_id, baseline_architecture, network_modifier, num_trials, num_seeds, days
+    """
+    # Set global flag for suggestors
+    suggestors_module.FIXED_NUM_SUBARCHES_MODE = fixed_depth
+
+    folder = Path(folder_path).resolve()
+    config_csv = folder / "configs.csv"
+
+    if not config_csv.exists():
+        raise FileNotFoundError(f"Config file not found: {config_csv}")
+
+    # Derive competition name from folder path
+    # Try to find the project root (containing tasks/ directory)
+    root_dir = folder
+    while root_dir.parent != root_dir:  # Stop at filesystem root
+        if (root_dir / "tasks").exists():
+            break
+        root_dir = root_dir.parent
+    competition_name = _derive_competition_name(folder, root_dir)
+
+    print(f"[run_from_folder] Loading config from: {config_csv}")
+    print(f"[run_from_folder] Competition name: {competition_name}")
+
+    # Load the full config including experiment parameters
+    modifiers_list, baselines_list, num_trials, num_seeds, days, qps_min_from_config = load_full_config_csv(config_csv)
+
+    # Use QPS from config if available, otherwise fall back to the passed parameter
+    qps_min_to_use = qps_min_from_config
+
+    print(f"[run_from_folder] Loaded {len(modifiers_list)} configurations")
+    print(f"[run_from_folder] Parameters: num_trials={num_trials}, num_seeds={num_seeds}, days={days}, qps_min={qps_min_to_use}")
+
+    # Determine which seeds to use
+    if num_seeds <= len(SEEDS):
+        seeds_to_use = SEEDS[:num_seeds]
+    else:
+        # If we need more seeds than defined in config, extend with sequential seeds
+        seeds_to_use = SEEDS + list(range(len(SEEDS), num_seeds))
+
+    print(f"[run_from_folder] Using {len(seeds_to_use)} seeds: {seeds_to_use}")
+
+    # Create output directory structure
+    mode_tag = _mode_tag(soft_qps=soft_qps, soft_qps_tau=soft_qps_tau, qps_min=qps_min_to_use)
+
+    # Output goes in the same folder or a subdirectory
+    results_dir = folder
+    out_root = (folder / "results" / mode_tag).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    # --- Build suggestors ---
+    suggestors = [
+        RandomSuggestor(),
+        SimulatedAnnealingSuggestor(T0=0.5, alpha=0.996, warmup=3),
+        LogSpaceSimulatedAnnealingSuggestor(T0=0.5, alpha=0.996, warmup=3),
+    ]
+    # Optional: Optuna TPE
+    try:
+        suggestors.append(TPESuggestor(initial_arch=BASELINE_ARCH))
+    except Exception as e:
+        print("[info] Optuna not installed; skipping TPESuggestor.")
+    # Optional: scikit-optimize baselines
+    # try:
+    suggestors += [
+        SkoptBOSuggestor("dummy", name="Skopt-Random"),
+        SkoptBOSuggestor("GP",    name="Skopt-GP"),
+        SkoptBOSuggestor("RF",    name="Skopt-RF"),
+        SkoptBOSuggestor("ET",    name="Skopt-ET"),
+        SkoptBOSuggestor("GBRT",  name="Skopt-GBRT"),
+    ]
+    # except Exception:
+    #     print("[info] scikit-optimize not installed; skipping Skopt* baselines.")
+
+    # --- Run experiments for each configuration ---
+    all_runs: Dict[str, Dict[str, List[RunLog]]] = {}
+
+    for idx, (modifiers, baseline) in enumerate(zip(modifiers_list, baselines_list), start=1):
+        label = f"config_{idx:02d}"
+
+        print(f"\n[run_from_folder] Running configuration {idx}/{len(modifiers_list)}: {label}")
+
+        cfg = {
+            "GLOBAL_NOISE_SCALE": 0.0,
+            "BASELINE_ARCH": baseline,
+            "BASELINE_DAY": days,
+            "NETWORK_MODIFIERS": modifiers,
+        }
+        model_object = ModelPerformanceAPI(cfg)
+
+        # Evaluator: set search-time QPS strategy
+        evaluate_cfg = make_evaluator(
+            model_object,
+            qps_min=qps_min_to_use,
+            soft_qps_tau=(soft_qps_tau if soft_qps else None),
+        )
+
+        bench = Benchmark(evaluate_cfg)
+
+        results: Dict[str, List[RunLog]] = {}
+        for sug in suggestors:
+            results[sug.name] = []
+            for s in seeds_to_use:
+                # Run num_trials + 1 total: step 0 = baseline, steps 1-num_trials = additional trials
+                run_result = bench.run(sug, n_trials=num_trials + 1, seed=s, initial_arch=baseline)
+                results[sug.name].append(run_result)
+
+        out_dir = out_root / label
+        save_runs(results, out_dir)
+        save_arches_per_method(results, out_dir)
+        plot_runs(results, title_prefix=f"[{label}] ")
+
+        baseline_ne = model_object.get_default_model_config_dict()["BASELINE_NE"]
+        print(f"[{label}] Saved CSVs to: {out_dir.resolve()}")
+        print(f"[{label}] Methods: {list(results.keys())}")
+        print(f"[{label}] BASELINE_NE (computed) = {baseline_ne:.6f}")
+        print("-" * 60)
+
+        all_runs[label] = results
+
+    # --- Write reports ---
+    print("\n[run_from_folder] Generating reports...")
+    write_all_reports(
+        all_runs_by_label=all_runs,
+        modifiers_list=modifiers_list,
+        baselines_list=baselines_list,
+        results_dir=results_dir,
+        qps_min=qps_min_to_use,
+        mode_tag=mode_tag,
+        competition_name=competition_name,
+    )
+
+    print(f"\n[run_from_folder] All experiments complete!")
+    print(f"[run_from_folder] Results saved to: {results_dir}")
+
 # -----------------------
 # CLI
 # -----------------------
 def main():
     parser = argparse.ArgumentParser(description="Run HPO experiments with network modifiers.")
+    parser.add_argument(
+        "--folder",
+        type=str,
+        default=None,
+        help="Folder containing configs.csv to run experiments from.",
+    )
     parser.add_argument(
         "--root-dir",
         type=str,
@@ -539,29 +953,53 @@ def main():
         action="store_true",
         help="Print verbose output during baseline generation (shows QPS values and attempts).",
     )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=5,
+        help="Number of layers (subarches) to use in network modifiers (default: 5).",
+    )
+    parser.add_argument(
+        "--allow-variable-subarches",
+        action="store_true",
+        help="Allow suggestors to search architectures with variable number of subarchitectures (1 to MAX_SUBARCHES). By default, all architectures have exactly MAX_SUBARCHES (5) subarchitectures with variable depth per subarch.",
+    )
     args = parser.parse_args()
 
-    all_runs, modifiers_list, baselines_list, mode_tag, results_dir = run_all(
-        root_dir=args.root_dir,
-        n_modifier_sets=args.n_modifiers,
-        seed=args.seed,
-        regenerate_modifiers=args.regenerate_modifiers,
-        qps_min=args.qps_min,
-        soft_qps=args.soft_qps,
-        soft_qps_tau=args.soft_qps_tau,
-        single_default_modifier=args.single_default_modifier,
-        n_seeds=args.n_seeds,
-        verbose_baseline_gen=args.verbose_baseline_gen,
-    )
+    # If folder is specified, run from config file in that folder
+    if args.folder:
+        run_from_folder(
+            folder_path=args.folder,
+            qps_min=args.qps_min,
+            soft_qps=args.soft_qps,
+            soft_qps_tau=args.soft_qps_tau,
+            fixed_depth=not args.allow_variable_subarches,
+        )
+    else:
+        # Original behavior
+        all_runs, modifiers_list, baselines_list, mode_tag, results_dir = run_all(
+            root_dir=args.root_dir,
+            n_modifier_sets=args.n_modifiers,
+            seed=args.seed,
+            regenerate_modifiers=args.regenerate_modifiers,
+            qps_min=args.qps_min,
+            soft_qps=args.soft_qps,
+            soft_qps_tau=args.soft_qps_tau,
+            single_default_modifier=args.single_default_modifier,
+            n_seeds=args.n_seeds,
+            verbose_baseline_gen=args.verbose_baseline_gen,
+            num_layers=args.num_layers,
+            fixed_depth=not args.allow_variable_subarches,
+        )
 
-    write_all_reports(
-        all_runs_by_label=all_runs,
-        modifiers_list=modifiers_list,
-        baselines_list=baselines_list,
-        results_dir=results_dir,
-        qps_min=args.qps_min,
-        mode_tag=mode_tag,
-    )
+        write_all_reports(
+            all_runs_by_label=all_runs,
+            modifiers_list=modifiers_list,
+            baselines_list=baselines_list,
+            results_dir=results_dir,
+            qps_min=args.qps_min,
+            mode_tag=mode_tag,
+        )
 
 if __name__ == "__main__":
     main()

@@ -54,15 +54,21 @@ def validate_arch_nested(arch: List[List[int]]) -> None:
 # ------------------------------------------------------------
 # Sampling (powers-of-two widths)
 # ------------------------------------------------------------
-def sample_subarch_pow2(rng: np.random.RandomState) -> List[int]:
-    depth = int(rng.randint(MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB + 1))
+def sample_subarch_pow2(rng: np.random.RandomState, fixed_depth: bool = False) -> List[int]:
+    if fixed_depth:
+        depth = MAX_LAYERS_PER_SUB
+    else:
+        depth = int(rng.randint(MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB + 1))
     wi = int(rng.randint(0, len(POW2_WIDTHS)))
     w = int(POW2_WIDTHS[wi])
     return [w] * depth
 
-def sample_arch_pow2(rng: np.random.RandomState) -> List[List[int]]:
-    s = int(rng.randint(MIN_SUBARCHES, MAX_SUBARCHES + 1))
-    return [sample_subarch_pow2(rng) for _ in range(s)]
+def sample_arch_pow2(rng: np.random.RandomState, fixed_depth: bool = False, fixed_num_subarches: bool = False) -> List[List[int]]:
+    if fixed_num_subarches:
+        s = MAX_SUBARCHES
+    else:
+        s = int(rng.randint(MIN_SUBARCHES, MAX_SUBARCHES + 1))
+    return [sample_subarch_pow2(rng, fixed_depth=fixed_depth) for _ in range(s)]
 
 # ------------------------------------------------------------
 # Neighborhood moves (support k_max & force_replace)
@@ -73,28 +79,46 @@ def neighbor_arch_pow2(
     *,
     k_max: int = 1,
     force_replace: bool = False,
+    fixed_depth: bool = False,
+    fixed_num_subarches: bool = False,
 ) -> List[List[int]]:
     """
     Local edits on powers-of-two ladder:
       - width: move width index by ±k where 1<=k<=k_max
-      - depth: +/- one layer
-      - add/remove: add or remove a sub-arch
+      - depth: +/- one layer (disabled if fixed_depth=True)
+      - add/remove: add or remove a sub-arch (disabled if fixed_num_subarches=True)
       - replace: swap one sub-arch with a fresh random one (used when force_replace=True)
 
     Returns a valid architecture; falls back to a random sample if needed.
     """
     if not arch:
-        return sample_arch_pow2(rng)
+        return sample_arch_pow2(rng, fixed_depth=fixed_depth, fixed_num_subarches=fixed_num_subarches)
 
     new_arch = [list(sub) for sub in arch]  # deep copy
 
     if force_replace:
         # Replace one sub-arch entirely
         i = int(rng.randint(0, len(new_arch)))
-        new_arch[i] = sample_subarch_pow2(rng)
+        new_arch[i] = sample_subarch_pow2(rng, fixed_depth=fixed_depth)
     else:
-        ops = ["width", "depth", "add", "remove"]
-        p   = [0.45,    0.35,    0.10,  0.10]
+        if fixed_num_subarches:
+            # When fixed_num_subarches is True, only allow width and depth changes
+            if fixed_depth:
+                # Only width changes
+                ops = ["width"]
+                p   = [1.0]
+            else:
+                # Width and depth changes
+                ops = ["width", "depth"]
+                p   = [0.60,    0.40]
+        elif fixed_depth:
+            # When fixed_depth is True, only allow width changes and add/remove sub-arches
+            ops = ["width", "add", "remove"]
+            p   = [0.80,    0.10,  0.10]
+        else:
+            # All operations allowed
+            ops = ["width", "depth", "add", "remove"]
+            p   = [0.45,    0.35,    0.10,  0.10]
         op = rng.choice(ops, p=p)
 
         if op == "width":
@@ -121,7 +145,7 @@ def neighbor_arch_pow2(
                 new_arch[i] = new_arch[i] + [new_arch[i][0]]
 
         elif op == "add" and len(new_arch) < MAX_SUBARCHES:
-            new_arch.append(sample_subarch_pow2(rng))
+            new_arch.append(sample_subarch_pow2(rng, fixed_depth=fixed_depth))
 
         elif op == "remove" and len(new_arch) > MIN_SUBARCHES:
             i = int(rng.randint(0, len(new_arch)))
@@ -132,7 +156,7 @@ def neighbor_arch_pow2(
         validate_arch_nested(new_arch)
         return new_arch
     except AssertionError:
-        return sample_arch_pow2(rng)
+        return sample_arch_pow2(rng, fixed_depth=fixed_depth, fixed_num_subarches=fixed_num_subarches)
 
 # ------------------------------------------------------------
 # Encoding helpers for skopt/optuna (index over POW2_WIDTHS)
