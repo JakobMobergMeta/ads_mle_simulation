@@ -6,20 +6,20 @@ build-backend = "setuptools.build_meta"
 name = "ads-mle-simulation"
 version = "0.1.0"
 description = "HPO on a simulated environment"
-requires-python = ">=3.10"
-# Base deps (keep small so editable install is fast)
+requires-python = ">=3.9,<3.10"
 dependencies = [
-  "numpy>=1.24",
-  "pandas>=1.5",
-  "matplotlib>=3.7",
+  "numpy==1.19.5",
+  "scipy==1.5.4",
+  "pandas==1.2.5",
+  "matplotlib==3.3.4",
 ]
 
-# Put heavy/optional HPO libs here
 [project.optional-dependencies]
 hpo = [
-  "optuna>=3.2",
+  "scikit-learn==0.24.2",
   "scikit-optimize==0.9.0",
-  "nevergrad>=0.12.1",
+  "nevergrad<0.10",      # e.g., 0.9.x works with NumPy 1.19.5
+  "optuna<3.0",          # 2.x is safest on this legacy stack
 ]
 dev = [
   "ipykernel",
