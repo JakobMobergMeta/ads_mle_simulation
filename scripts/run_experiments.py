@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import json
@@ -27,8 +28,9 @@ from archopt.modifiers import (
     load_modifiers_csv,
 )
 from archopt.networks import (
-    sample_arch_pow2,     # nested, powers-of-two sampler
+    sample_arch_pow2,     # nested sampler (uses current width ladder)
     validate_arch_nested, # sanity checks
+    set_width_mode,       # configure linear vs pow2 widths
 )
 import numpy as np
 
@@ -294,6 +296,53 @@ def _ensure_report_dir(results_dir: Path) -> Path:
     """Return the results directory (it should already exist)"""
     return results_dir
 
+def _save_command_file(folder_path: Path, command_args: argparse.Namespace):
+    """Save the command that was run to a command.sh file in the folder."""
+    command_parts = [sys.executable, "scripts/run_experiments.py"]
+
+    # Add all arguments that were specified
+    if command_args.folder:
+        command_parts.append(f"--folder \"{command_args.folder}\"")
+    if command_args.root_dir != ".":
+        command_parts.append(f"--root-dir \"{command_args.root_dir}\"")
+    if command_args.n_modifiers != 100:
+        command_parts.append(f"--n-modifiers {command_args.n_modifiers}")
+    if command_args.seed != 0:
+        command_parts.append(f"--seed {command_args.seed}")
+    if command_args.regenerate_modifiers:
+        command_parts.append("--regenerate-modifiers")
+    if command_args.qps_min != 3500.0:
+        command_parts.append(f"--qps-min {command_args.qps_min}")
+    if command_args.soft_qps:
+        command_parts.append("--soft-qps")
+    if command_args.soft_qps_tau != 0.15:
+        command_parts.append(f"--soft-qps-tau {command_args.soft_qps_tau}")
+    if command_args.single_default_modifier:
+        command_parts.append("--single-default-modifier")
+    if command_args.n_seeds is not None:
+        command_parts.append(f"--n-seeds {command_args.n_seeds}")
+    if command_args.verbose_baseline_gen:
+        command_parts.append("--verbose-baseline-gen")
+    if command_args.num_layers != 5:
+        command_parts.append(f"--num-layers {command_args.num_layers}")
+    if command_args.allow_variable_subarches:
+        command_parts.append("--allow-variable-subarches")
+    if command_args.use_pow2_widths:
+        command_parts.append("--use-pow2-widths")
+
+    command_str = " \\\n    ".join(command_parts)
+
+    command_file = folder_path / "command.sh"
+    with command_file.open("w") as f:
+        f.write("#!/bin/bash\n")
+        f.write("# Command used to run this experiment\n")
+        f.write(f"# Generated automatically by run_experiments.py\n\n")
+        f.write(command_str + "\n")
+
+    # Make the file executable
+    command_file.chmod(0o755)
+    print(f"[run_from_folder] Saved command to: {command_file.resolve()}")
+
 # -----------------------
 # core pipeline
 # -----------------------
@@ -312,13 +361,15 @@ def run_all(
     random_baselines: bool = False,
     num_layers: int = 5,
     fixed_depth: bool = True,
+    use_pow2_widths: bool = False,
 ):
     """
     Run HPO experiments for multiple NETWORK_MODIFIERS sets.
     Results saved under: <root>/<OUT_ROOT.name>/<mode_tag>/modifiers_XX/
     """
-    # Set global flag for suggestors
+    # Set global flags
     suggestors_module.FIXED_NUM_SUBARCHES_MODE = fixed_depth
+    set_width_mode(use_pow2=use_pow2_widths)
 
     root = Path(root_dir).resolve()
 
@@ -750,13 +801,15 @@ def run_from_folder(
     soft_qps: bool = False,
     soft_qps_tau: float = 0.15,
     fixed_depth: bool = True,
+    use_pow2_widths: bool = False,
 ):
     """
     Run experiments from a folder containing configs.csv.
     The config file should have columns: config_id, baseline_architecture, network_modifier, num_trials, num_seeds, days
     """
-    # Set global flag for suggestors
+    # Set global flags
     suggestors_module.FIXED_NUM_SUBARCHES_MODE = fixed_depth
+    set_width_mode(use_pow2=use_pow2_widths)
 
     folder = Path(folder_path).resolve()
     config_csv = folder / "configs.csv"
@@ -964,16 +1017,25 @@ def main():
         action="store_true",
         help="Allow suggestors to search architectures with variable number of subarchitectures (1 to MAX_SUBARCHES). By default, all architectures have exactly MAX_SUBARCHES (5) subarchitectures with variable depth per subarch.",
     )
+    parser.add_argument(
+        "--use-pow2-widths",
+        action="store_true",
+        help="Use power-of-2 width ladder (e.g., 64, 128, 256, ..., 4096) instead of the default linear ladder with step size 64 (e.g., 64, 128, 192, ..., 4096).",
+    )
     args = parser.parse_args()
 
     # If folder is specified, run from config file in that folder
     if args.folder:
+        # Save the command that was run
+        _save_command_file(Path(args.folder), args)
+
         run_from_folder(
             folder_path=args.folder,
             qps_min=args.qps_min,
             soft_qps=args.soft_qps,
             soft_qps_tau=args.soft_qps_tau,
             fixed_depth=not args.allow_variable_subarches,
+            use_pow2_widths=args.use_pow2_widths,
         )
     else:
         # Original behavior
@@ -990,6 +1052,7 @@ def main():
             verbose_baseline_gen=args.verbose_baseline_gen,
             num_layers=args.num_layers,
             fixed_depth=not args.allow_variable_subarches,
+            use_pow2_widths=args.use_pow2_widths,
         )
 
         write_all_reports(

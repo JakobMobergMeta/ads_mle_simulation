@@ -6,15 +6,25 @@ from pathlib import Path
 from typing import Dict, List
 
 from .config import (
-    WIDTH_MIN, WIDTH_MAX,
+    WIDTH_MIN, WIDTH_MAX, WIDTH_STEP,
     MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB,
     MIN_SUBARCHES,      MAX_SUBARCHES,
 )
 
 # ------------------------------------------------------------
-# Width ladders (powers-of-two only, per your requirement)
+# Width ladders: Linear (default) and Powers-of-two (optional)
 # ------------------------------------------------------------
+def _linear_levels(lo: int, hi: int, step: int) -> List[int]:
+    """Generate width levels with equal step size."""
+    levels: List[int] = []
+    w = lo
+    while w <= hi:
+        levels.append(w)
+        w += step
+    return levels
+
 def _pow2_levels(lo: int, hi: int) -> List[int]:
+    """Generate width levels as powers of two."""
     if lo < 1: lo = 1
     levels: List[int] = []
     w = 1
@@ -34,7 +44,22 @@ def _pow2_levels(lo: int, hi: int) -> List[int]:
             levels.append(nxt)
     return levels
 
-POW2_WIDTHS: List[int] = _pow2_levels(WIDTH_MIN, WIDTH_MAX)  # e.g. [64,128,256,512,1024,2048]
+# Default: Linear widths with step size 64 (e.g. [64, 128, 192, ..., 4096])
+LINEAR_WIDTHS: List[int] = _linear_levels(WIDTH_MIN, WIDTH_MAX, WIDTH_STEP)
+# Optional: Powers-of-two widths (e.g. [64, 128, 256, 512, 1024, 2048, 4096])
+POW2_WIDTHS: List[int] = _pow2_levels(WIDTH_MIN, WIDTH_MAX)
+
+# Global variable to control which width ladder to use
+USE_POW2_WIDTHS = False  # Default is linear widths
+
+def get_width_levels() -> List[int]:
+    """Return the currently active width ladder."""
+    return POW2_WIDTHS if USE_POW2_WIDTHS else LINEAR_WIDTHS
+
+def set_width_mode(use_pow2: bool = False):
+    """Set the width ladder mode (linear or power-of-2)."""
+    global USE_POW2_WIDTHS
+    USE_POW2_WIDTHS = use_pow2
 
 # ------------------------------------------------------------
 # Validation
@@ -42,25 +67,28 @@ POW2_WIDTHS: List[int] = _pow2_levels(WIDTH_MIN, WIDTH_MAX)  # e.g. [64,128,256,
 def validate_arch_nested(arch: List[List[int]]) -> None:
     assert isinstance(arch, list), "arch must be a list of sub-architectures"
     assert MIN_SUBARCHES <= len(arch) <= MAX_SUBARCHES, f"#subarches out of bounds"
+    width_levels = get_width_levels()
     for sub in arch:
         assert isinstance(sub, list), "each sub-arch must be a list"
         assert MIN_LAYERS_PER_SUB <= len(sub) <= MAX_LAYERS_PER_SUB, "depth out of bounds"
         for w in sub:
             assert isinstance(w, int), "widths must be ints"
             assert WIDTH_MIN <= w <= WIDTH_MAX, "width outside global bounds"
-            # enforce powers-of-two set
-            assert w in POW2_WIDTHS, f"width {w} is not a power-of-two level"
+            # enforce width is in the current width ladder
+            assert w in width_levels, f"width {w} is not in the width ladder"
 
 # ------------------------------------------------------------
-# Sampling (powers-of-two widths)
+# Sampling (using current width ladder)
 # ------------------------------------------------------------
 def sample_subarch_pow2(rng: np.random.RandomState, fixed_depth: bool = False) -> List[int]:
+    """Sample a sub-architecture using the current width ladder."""
+    width_levels = get_width_levels()
     if fixed_depth:
         depth = MAX_LAYERS_PER_SUB
     else:
         depth = int(rng.randint(MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB + 1))
-    wi = int(rng.randint(0, len(POW2_WIDTHS)))
-    w = int(POW2_WIDTHS[wi])
+    wi = int(rng.randint(0, len(width_levels)))
+    w = int(width_levels[wi])
     return [w] * depth
 
 def sample_arch_pow2(rng: np.random.RandomState, fixed_depth: bool = False, fixed_num_subarches: bool = False) -> List[List[int]]:
@@ -122,18 +150,22 @@ def neighbor_arch_pow2(
         op = rng.choice(ops, p=p)
 
         if op == "width":
+            width_levels = get_width_levels()
             i = int(rng.randint(0, len(new_arch)))
             cur_w = new_arch[i][0]
             try:
-                idx = POW2_WIDTHS.index(cur_w)
+                idx = width_levels.index(cur_w)
             except ValueError:
-                # if somehow not on ladder, snap to nearest by log distance
-                idx = int(np.argmin([abs(math.log(max(1, cur_w)) - math.log(w)) for w in POW2_WIDTHS]))
+                # if somehow not on ladder, snap to nearest by log distance (for pow2) or absolute distance (for linear)
+                if USE_POW2_WIDTHS:
+                    idx = int(np.argmin([abs(math.log(max(1, cur_w)) - math.log(w)) for w in width_levels]))
+                else:
+                    idx = int(np.argmin([abs(cur_w - w) for w in width_levels]))
             # jump by ±k where k in [1, k_max]
             k = int(rng.randint(1, max(1, k_max) + 1))
             step = int(rng.choice([-k, k]))
-            idx = max(0, min(len(POW2_WIDTHS) - 1, idx + step))
-            new_w = int(POW2_WIDTHS[idx])
+            idx = max(0, min(len(width_levels) - 1, idx + step))
+            new_w = int(width_levels[idx])
             new_arch[i] = [new_w] * len(new_arch[i])
 
         elif op == "depth":
@@ -159,20 +191,24 @@ def neighbor_arch_pow2(
         return sample_arch_pow2(rng, fixed_depth=fixed_depth, fixed_num_subarches=fixed_num_subarches)
 
 # ------------------------------------------------------------
-# Encoding helpers for skopt/optuna (index over POW2_WIDTHS)
+# Encoding helpers for skopt/optuna (index over width ladder)
 # ------------------------------------------------------------
 def arch_to_params(arch: List[List[int]]) -> Dict[str, int]:
     validate_arch_nested(arch)
+    width_levels = get_width_levels()
     n_sub = len(arch)
     params: Dict[str, int] = {"n_sub": n_sub}
     for i, sub in enumerate(arch):
         d = len(sub)
         w = sub[0]
         try:
-            k = POW2_WIDTHS.index(w)
+            k = width_levels.index(w)
         except ValueError:
             # snap to nearest ladder idx
-            k = int(np.argmin([abs(math.log(max(1, w)) - math.log(v)) for v in POW2_WIDTHS]))
+            if USE_POW2_WIDTHS:
+                k = int(np.argmin([abs(math.log(max(1, w)) - math.log(v)) for v in width_levels]))
+            else:
+                k = int(np.argmin([abs(w - v) for v in width_levels]))
         params[f"depth_{i}"] = int(d)
         params[f"widx_{i}"]  = int(k)
     # fill the rest (fixed-size param space)
@@ -182,13 +218,14 @@ def arch_to_params(arch: List[List[int]]) -> Dict[str, int]:
     return params
 
 def params_to_arch(params: Dict[str, int]) -> List[List[int]]:
+    width_levels = get_width_levels()
     n_sub = int(params["n_sub"])
     n_sub = max(MIN_SUBARCHES, min(MAX_SUBARCHES, n_sub))
     arch: List[List[int]] = []
     for i in range(n_sub):
         d = max(MIN_LAYERS_PER_SUB, min(MAX_LAYERS_PER_SUB, int(params[f"depth_{i}"])))
-        k = max(0, min(len(POW2_WIDTHS) - 1, int(params[f"widx_{i}"])))
-        w = int(POW2_WIDTHS[k])
+        k = max(0, min(len(width_levels) - 1, int(params[f"widx_{i}"])))
+        w = int(width_levels[k])
         arch.append([w] * d)
     validate_arch_nested(arch)
     return arch

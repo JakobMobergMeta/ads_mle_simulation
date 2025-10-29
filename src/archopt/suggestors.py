@@ -4,12 +4,14 @@ from typing import Any, Dict, Optional, List
 import numpy as np
 
 from .networks import (
-    # use powers-of-two ladder
+    # sampling and neighbor functions
     sample_arch_pow2,
     sample_subarch_pow2,  # needed for LogSpaceSimulatedAnnealingSuggestor
     neighbor_arch_pow2,
     validate_arch_nested,
-    POW2_WIDTHS as WIDTH_LEVELS,  # list of allowed widths (2^n)
+    # width ladder access
+    get_width_levels,  # dynamically get current width ladder
+    USE_POW2_WIDTHS,   # check current mode
     MIN_SUBARCHES, MAX_SUBARCHES,
     MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB,
     # encoding helpers
@@ -162,6 +164,7 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
     """
     Simulated annealing in log-space for uniform exploration of exponential grids.
     Works on log₂(width) values to make steps uniform, then maps back to powers-of-2.
+    Note: This suggestor is designed for power-of-2 width ladders and may not work well with linear ladders.
     """
     name = "LogSpaceSimulatedAnnealing"
 
@@ -185,10 +188,11 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
         self.stall_reheat_every = stall_reheat_every
         self.reheat_factor = reheat_factor
 
-        # Log₂ values for uniform spacing
-        self.log2_values = [int(math.log2(w)) for w in WIDTH_LEVELS]  # [6,7,8,9,10,11]
-        self.min_log2 = min(self.log2_values)
-        self.max_log2 = max(self.log2_values)
+        # Get width levels dynamically (will be set at reset time based on mode)
+        self._width_levels = None
+        self.log2_values = None
+        self.min_log2 = None
+        self.max_log2 = None
 
         self._x: Optional[Dict[str, Any]] = None
         self._fx: Optional[float] = None
@@ -200,6 +204,19 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
 
     def reset(self, seed: int):
         random.seed(seed)
+        # Update width levels from current mode
+        self._width_levels = get_width_levels()
+        # Compute log2 values (or use linear indices for linear mode)
+        if USE_POW2_WIDTHS:
+            self.log2_values = [int(math.log2(w)) for w in self._width_levels]
+            self.min_log2 = min(self.log2_values)
+            self.max_log2 = max(self.log2_values)
+        else:
+            # For linear mode, use indices directly
+            self.log2_values = list(range(len(self._width_levels)))
+            self.min_log2 = 0
+            self.max_log2 = len(self._width_levels) - 1
+
         self._x = None
         self._fx = None
         self._best = None
@@ -209,13 +226,25 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
         self._since_improve = 0
 
     def _width_to_log2(self, width: int) -> int:
-        """Convert width to log₂ value"""
-        return int(math.log2(width))
+        """Convert width to log₂ value or index"""
+        if USE_POW2_WIDTHS:
+            return int(math.log2(width))
+        else:
+            # For linear mode, return the index in the width ladder
+            try:
+                return self._width_levels.index(width)
+            except ValueError:
+                # Snap to nearest
+                return int(np.argmin([abs(width - w) for w in self._width_levels]))
 
     def _log2_to_width(self, log2_val: int) -> int:
-        """Convert log₂ value to width, clamped to valid range"""
+        """Convert log₂ value or index to width, clamped to valid range"""
         log2_val = max(self.min_log2, min(self.max_log2, log2_val))
-        return 2 ** log2_val
+        if USE_POW2_WIDTHS:
+            return 2 ** log2_val
+        else:
+            # For linear mode, use as direct index
+            return self._width_levels[log2_val]
 
     def _propose_neighbor_logspace(self, rng: np.random.RandomState, arch: List[List[int]]) -> List[List[int]]:
         """Propose neighbor using uniform moves in log₂ space"""
@@ -251,7 +280,7 @@ class LogSpaceSimulatedAnnealingSuggestor(Suggestor):
             else:  # depth change (30% prob)
                 if rng.rand() < 0.5 and len(sub) < MAX_LAYERS_PER_SUB:
                     # add layer
-                    new_arch[sub_idx] = sub + [sub[0]] if sub else [WIDTH_LEVELS[rng.randint(len(WIDTH_LEVELS))]]
+                    new_arch[sub_idx] = sub + [sub[0]] if sub else [self._width_levels[rng.randint(len(self._width_levels))]]
                     return new_arch
                 elif len(sub) > MIN_LAYERS_PER_SUB:
                     # remove layer
@@ -362,6 +391,7 @@ try:
 
         def ask(self, rng: np.random.RandomState, state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             trial = self._study.ask()
+            width_levels = get_width_levels()
             if FIXED_NUM_SUBARCHES_MODE:
                 # Force exactly MAX_SUBARCHES subarchitectures
                 n_sub = MAX_SUBARCHES
@@ -369,7 +399,7 @@ try:
                 n_sub = trial.suggest_int("n_sub", MIN_SUBARCHES, MAX_SUBARCHES)
             for i in range(MAX_SUBARCHES):
                 trial.suggest_int(f"depth_{i}", MIN_LAYERS_PER_SUB, MAX_LAYERS_PER_SUB)
-                trial.suggest_int(f"widx_{i}", 0, len(WIDTH_LEVELS) - 1)
+                trial.suggest_int(f"widx_{i}", 0, len(width_levels) - 1)
             params = dict(trial.params)
             params["n_sub"] = n_sub
             cfg = {"arch": params_to_arch(params)}
@@ -407,7 +437,9 @@ class SkoptBOSuggestor(Suggestor):
         self.opt = None
         self._last_x = None
 
-        # Search space: n_sub + per-sub depth + per-sub width-index (over POW2 ladder)
+        # Search space: n_sub + per-sub depth + per-sub width-index (over width ladder)
+        # Get width levels at initialization time
+        width_levels = get_width_levels()
         if FIXED_NUM_SUBARCHES_MODE:
             # When number of subarches is fixed, we don't need n_sub dimension in the search space
             # We'll set it to MAX_SUBARCHES when converting to architecture
@@ -415,7 +447,7 @@ class SkoptBOSuggestor(Suggestor):
                           for i in range(MAX_SUBARCHES)]
             self._space = [
                 *depth_dims,
-                *[self._Integer(0, len(WIDTH_LEVELS) - 1, name=f"widx_{i}")
+                *[self._Integer(0, len(width_levels) - 1, name=f"widx_{i}")
                   for i in range(MAX_SUBARCHES)],
             ]
             self._fixed_num_subarches = True
@@ -425,7 +457,7 @@ class SkoptBOSuggestor(Suggestor):
             self._space = [
                 self._Integer(MIN_SUBARCHES, MAX_SUBARCHES, name="n_sub"),
                 *depth_dims,
-                *[self._Integer(0, len(WIDTH_LEVELS) - 1, name=f"widx_{i}")
+                *[self._Integer(0, len(width_levels) - 1, name=f"widx_{i}")
                   for i in range(MAX_SUBARCHES)],
             ]
             self._fixed_num_subarches = False

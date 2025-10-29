@@ -1,0 +1,20 @@
+Reults:
+
+Rules based (optimizers): (target 3) — aggregated across all seed×modifier combinations
+LogSpaceSimulatedAnnealing 0.061349 (min=0.000000, max=0.143958, n=50)
+Random 0.118675 (min=0.018194, max=0.160031, n=50)
+SimulatedAnnealing 0.077386 (min=0.003994, max=0.142398, n=50)
+Skopt-ET 0.119358 (min=0.054824, max=0.160031, n=50)
+Skopt-GBRT 0.122186 (min=0.058994, max=0.160031, n=50)
+Skopt-GP 0.116774 (min=0.000000, max=0.148109, n=50)
+Skopt-RF 0.109233 (min=0.042675, max=0.158385, n=50)
+Skopt-Random 0.103954 (min=0.009998, max=0.160031, n=50)
+TPE 0.118932 (min=0.037677, max=0.160031, n=50)
+
+[baseline] days=60
+Baseline architectures (one per modifier):
+  Modifier 1: [[256, 256], [512, 512], [256, 256], [64], [64]]
+  Modifier 2: [[256, 256], [512, 512], [256, 256], [64], [64]]
+  Modifier 3: [[256, 256], [512, 512], [256, 256], [64], [64]]
+  Modifier 4: [[256, 256], [512, 512], [256, 256], [64], [64]]
+  Modifier 5: [[256, 256], [512, 512], [256, 256], [64], [64]]

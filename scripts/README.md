@@ -71,6 +71,63 @@ Both experiments test these optimization algorithms:
 - **Skopt-*** - Bayesian optimization methods (if scikit-optimize installed):
   - Skopt-Random, Skopt-GP, Skopt-RF, Skopt-ET, Skopt-GBRT
 
+## Width Search Space Configuration
+
+The script supports two different width ladder modes for architecture search:
+
+### 1. **Linear Step Size 64 (Default)**
+
+By default, the script searches over widths with **equal step sizes of 64** from 64 to 4096:
+```
+64, 128, 192, 256, 320, 384, ..., 3968, 4032, 4096
+```
+This provides **64 discrete width levels** for fine-grained optimization.
+
+**Example command:**
+```bash
+# Default mode - uses linear step size 64
+python scripts/run_experiments.py --folder /path/to/experiment
+```
+
+### 2. **Power-of-2 Widths**
+
+Use the `--use-pow2-widths` flag to search over **power-of-2 widths**:
+```
+64, 128, 256, 512, 1024, 2048, 4096
+```
+This provides **7 discrete width levels** with exponential spacing.
+
+**Example command:**
+```bash
+# Power-of-2 mode
+python scripts/run_experiments.py --folder /path/to/experiment --use-pow2-widths
+```
+
+### Running Experiments from a Folder
+
+When you have a pre-configured experiment folder with a `configs.csv` file:
+
+**Linear step size 64 (default):**
+```bash
+python scripts/run_experiments.py --folder /path/to/experiment/folder
+```
+
+**Power-of-2 widths:**
+```bash
+python scripts/run_experiments.py --folder /path/to/experiment/folder --use-pow2-widths
+```
+
+**With additional options:**
+```bash
+python scripts/run_experiments.py \
+    --folder /path/to/experiment/folder \
+    --use-pow2-widths \
+    --qps-min 4000 \
+    --soft-qps
+```
+
+**Command History:** Each run automatically saves a `command.sh` file in the experiment folder containing the exact command used, making experiments easy to reproduce.
+
 ## Additional Options
 
 ### Soft QPS Mode
@@ -98,3 +155,50 @@ The CSV files contain trial-by-trial data including:
 - Performance scores
 - QPS (queries per second) values
 - Network efficiency (NE) metrics
+
+## Command-Line Reference
+
+### All Available Flags
+
+```bash
+python scripts/run_experiments.py [OPTIONS]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--folder` | string | None | Path to folder containing `configs.csv` for pre-configured experiments |
+| `--root-dir` | string | `.` | Root directory for tasks and outputs |
+| `--n-modifiers` | int | 100 | Number of random modifier sets to generate |
+| `--seed` | int | 0 | Seed for generating random modifiers |
+| `--regenerate-modifiers` | flag | False | Force regeneration of modifiers even if file exists |
+| `--qps-min` | float | 3500.0 | Minimum QPS requirement |
+| `--soft-qps` | flag | False | Use soft QPS penalty instead of hard rejection |
+| `--soft-qps-tau` | float | 0.15 | Softness parameter for soft QPS penalty |
+| `--single-default-modifier` | flag | False | Use single default modifier instead of multiple random ones |
+| `--n-seeds` | int | None | Number of seeds to use (overrides config default) |
+| `--verbose-baseline-gen` | flag | False | Print verbose output during baseline generation |
+| `--num-layers` | int | 5 | Number of layers (subarches) in network modifiers |
+| `--allow-variable-subarches` | flag | False | Allow variable number of subarchitectures (1 to MAX) |
+| `--use-pow2-widths` | flag | False | Use power-of-2 widths instead of linear step 64 |
+
+### Quick Examples
+
+**Standard run with default settings (linear step 64):**
+```bash
+python scripts/run_experiments.py
+```
+
+**Run from folder with power-of-2 widths:**
+```bash
+python scripts/run_experiments.py --folder tasks/my_experiment --use-pow2-widths
+```
+
+**Generate 50 modifiers with 5 seeds each:**
+```bash
+python scripts/run_experiments.py --n-modifiers 50 --n-seeds 5
+```
+
+**Soft QPS mode with custom threshold:**
+```bash
+python scripts/run_experiments.py --soft-qps --qps-min 4000 --soft-qps-tau 0.2
+```

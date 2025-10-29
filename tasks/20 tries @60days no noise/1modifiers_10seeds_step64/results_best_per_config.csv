@@ -1,0 +1,10 @@
+competition,config_id,ModifiersLabel,Competitor,num_seeds,avg_score,min_score,max_score,score_range
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,LogSpaceSimulatedAnnealing,10,0.07351726512830227,0.005608667323746899,0.12178400987370681,"[0.005609, 0.121784]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,Random,10,0.0,0.0,0.0,"[0.000000, 0.000000]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,SimulatedAnnealing,10,0.0750719615264388,0.015827015870319348,0.12011102520857271,"[0.015827, 0.120111]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,Skopt-ET,10,0.11614242692908841,0.09297953721884089,0.12315872898040316,"[0.092980, 0.123159]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,Skopt-GBRT,10,0.020689352908358855,0.0,0.11557215453575853,"[0.000000, 0.115572]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,Skopt-GP,10,0.04830381023203503,0.0,0.12585117596738665,"[0.000000, 0.125851]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,Skopt-RF,10,0.10266830024925569,0.061985513513386784,0.12160319566129628,"[0.061986, 0.121603]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,Skopt-Random,10,0.01676926373612701,0.0,0.09013001064970434,"[0.000000, 0.090130]"
+tasks-20 tries @60days no noise-1modifiers_10seeds_step64,1,config_01,TPE,10,0.05601255369647651,0.0,0.12130163227129388,"[0.000000, 0.121302]"
