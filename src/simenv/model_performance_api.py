@@ -63,11 +63,11 @@ class ModelPerformanceAPI:
             [1024, 1024],
         ],
         "LARGE_NETWORK": [
-            [2048, 2048],
-            [2048, 2048],
-            [2048, 2048],
-            [2048, 2048],
-            [2048, 2048],
+            [4096, 4096, 4096, 4096],
+            [4096, 4096, 4096, 4096],
+            [4096, 4096, 4096, 4096],
+            [4096, 4096, 4096, 4096],
+            [4096, 4096, 4096, 4096],
         ],
         "INPUT_DIMENSIONS": 512,  # Input dimensionality
         "OUTPUT_DIMENSIONS": 10,  # Output dimensionality
@@ -86,17 +86,22 @@ class ModelPerformanceAPI:
         "WAIT": False,
         "WAIT_SECONDS_PER_TRAINING_DAY": 1,
         #        "BASELINE_NE": 0.559786328135504,
-        "BASELINE_ARCH": [[256, 256], [512, 512], [256, 256], [64], [64]],
+        "BASELINE_ARCH": [[1024, 1024], [512, 512], [1024, 1024], [1024], [1024]],
         "BASELINE_DAY": 60,
         "MIN_SUBARCHES": 1,  # Minimum number of sub-architectures
         "DEPTH_RANGE": [1, 5],
-        "FLAX_RANGE": [64, 2048],
+        "FLAX_RANGE": [64, 4096],
         "NETWORK_MODIFIERS": {
-            0: [0.2, 0.2, 1, 0.1, 0.1],
-            1: [0.4, 0.2, 0.7, 0, 0.05],
-            2: [0.1, 0.1, 0.6, 0.4, 0.05],
-            3: [0.2, 0.4, 0.7, 0.3, 0.05],
-            4: [0.1, 0.1, 0.9, 0.1, 0.1],
+            0: [0.05, 0.23, 1, 0.1, 0.1],
+            1: [0.05, 0.2, 1, 0.1, 0.1],
+            2: [0.8, 0.01, 1, 0.1, 0.1],
+            3: [0.05, 0.23, 1, 0.1, 0.1],
+            4: [0.05, 0.23, 1, 0.1, 0.1],
+            #           0: [0.2, 0.2, 1, 0.1, 0.1],
+            #           1: [0.4, 0.2, 0.7, 0, 0.05],
+            #           2: [0.1, 0.1, 0.6, 0.4, 0.05],
+            #           3: [0.2, 0.4, 0.7, 0.3, 0.05],
+            #           4: [0.1, 0.1, 0.9, 0.1, 0.1],
             # format
             # { network_idx:
             #   [
@@ -211,6 +216,18 @@ class ModelPerformanceAPI:
         prev_layer_size = input_size
         end_to_end_network = list(arch) + [output_size]
         for layer_size in end_to_end_network:
+            # Ensure layer_size is an integer (handle nested structures)
+            if isinstance(layer_size, (list, tuple)):
+                raise ValueError(
+                    f"Expected integer layer size, got {type(layer_size)}: {layer_size}. "
+                    f"Architecture should be a flat list of integers, not nested."
+                )
+
+            if not isinstance(layer_size, int) or layer_size <= 0:
+                raise ValueError(
+                    f"Layer size must be a positive integer, got: {layer_size}"
+                )
+
             # Each layer: weights (prev_size * current_size) + biases (current_size)
             layer_params = prev_layer_size * layer_size + layer_size
             total_params += layer_params
@@ -460,7 +477,7 @@ class ModelPerformanceAPI:
         training_days: int,
         arch: List[List[int]],
         ignore_budget: bool = False,
-    ) -> tuple[float, float, Dict[str, float]]:
+    ) -> Tuple[float, float, Dict[int, Dict[str, float]]]:
         # Check budget constraints
         cost = self._check_budget_constraints(
             training_days,
@@ -480,11 +497,12 @@ class ModelPerformanceAPI:
         training_ne = 0.0
         qps = 0.0
 
-        arch_str = str(arch)
+        arch_str = str(arch)  # Use arch as cache key
         for i in range(1, training_days + 1):
             if self.model_cache.get(i, arch_str) is not None:
                 training_ne, qps = self.model_cache.get(i, arch_str)
             else:
+                # Use arch for the actual performance calculation
                 results = self._get_model_performance(i, arch)
                 training_ne = results["training_ne"]
                 qps = results["qps"]
@@ -492,7 +510,7 @@ class ModelPerformanceAPI:
 
                 self.model_cache.set(i, arch_str, (training_ne, qps))
 
-            curve[i] = training_ne
+            curve[i] = {"ne": training_ne, "qps": qps}
 
         # Record the expense after successful completion (unless ignoring budget)
         if not ignore_budget:
