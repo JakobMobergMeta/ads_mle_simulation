@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import json
@@ -488,6 +489,8 @@ def run_all(
 
     # --- Run experiments for each modifier set ---
     all_runs: Dict[str, Dict[str, List[RunLog]]] = {}
+    # Track timing for each run: key is (label, method, seed)
+    run_times: Dict[Tuple[str, str, int], float] = {}
 
     for idx, modifiers in enumerate(modifiers_list, start=1):
         if single_default_modifier:
@@ -520,8 +523,13 @@ def run_all(
         for sug in suggestors:
             results[sug.name] = []
             for s in seeds_to_use:
+                # Track time for this run
+                start_time = time.time()
                 # Run N_TRIALS + 1 total: step 0 = baseline, steps 1-N_TRIALS = additional trials
                 run_result = bench.run(sug, n_trials=N_TRIALS + 1, seed=s, initial_arch=baseline_for_modifier)
+                elapsed_time = time.time() - start_time
+                # Store timing
+                run_times[(label, sug.name, s)] = elapsed_time
                 results[sug.name].append(run_result)
 
         out_dir = out_root / label
@@ -537,7 +545,7 @@ def run_all(
 
         all_runs[label] = results
 
-    return all_runs, modifiers_list, baselines_list, mode_tag, results_dir
+    return all_runs, modifiers_list, baselines_list, mode_tag, results_dir, run_times
 
 # -----------------------
 # reports
@@ -551,11 +559,14 @@ def write_all_reports(
     qps_min: float,
     mode_tag: str,
     competition_name: str = "10tries_60days_no_noise",
+    run_times: Optional[Dict[Tuple[str, str, int], float]] = None,
 ):
     """
     Aggregate across all NETWORK_MODIFIERS.
     Saves report files with the mode tag in the filename.
     """
+    if run_times is None:
+        run_times = {}
     report_dir = _ensure_report_dir(results_dir)
     # Generate filenames based on mode - no mode tag for hard QPS
     if mode_tag.startswith("hardQPS"):
@@ -645,6 +656,10 @@ def write_all_reports(
         results = all_runs_by_label[label]
         for method, runs in results.items():
             for run in runs:
+                # Get the timing for this run (label, method, seed)
+                seed_for_run = run.trials[0].seed if run.trials else 0
+                elapsed_time = run_times.get((label, method, seed_for_run), 0.0)
+
                 for step, tr in enumerate(run.trials, start=0):
                     arch = tr.config.get("arch")
                     ne, qps, _ = model_for_label.train_model(
@@ -664,11 +679,12 @@ def write_all_reports(
                         "score": float(score),
                         "qps": float(qps),
                         "ne": float(ne),
+                        "time_seconds": float(elapsed_time),
                     })
 
     df = pd.DataFrame(
         rows,
-        columns=["competition","ModifiersLabel","Competitor","seed","step","Trial","Arch","score","qps","ne"]
+        columns=["competition","ModifiersLabel","Competitor","seed","step","Trial","Arch","score","qps","ne","time_seconds"]
     )
     df.to_csv(flat_csv, index=False)
     print(f"Saved: {flat_csv.resolve()}")
@@ -707,13 +723,27 @@ def write_all_reports(
                 # Store the score for aggregation
                 config_method_scores[(idx, label, method)].append(best_trial.value)
 
-    # Now aggregate the results per config+method
+    # Now aggregate the results per config+method (including average time)
+    # Collect times for each config+method combination
+    config_method_times: Dict[tuple, List[float]] = defaultdict(list)
+    for idx, label in enumerate(labels, start=1):
+        results = all_runs_by_label[label]
+        for method, runs in results.items():
+            for run in runs:
+                seed_for_run = run.trials[0].seed if run.trials else 0
+                elapsed_time = run_times.get((label, method, seed_for_run), 0.0)
+                config_method_times[(idx, label, method)].append(elapsed_time)
+
     best_rows: List[Dict] = []
     for (config_id, label, method), scores in config_method_scores.items():
         if scores:
             avg_score = sum(scores) / len(scores)
             min_score = min(scores)
             max_score = max(scores)
+
+            # Get average time
+            times = config_method_times.get((config_id, label, method), [0.0])
+            avg_time = sum(times) / len(times) if times else 0.0
 
             best_rows.append({
                 "competition": competition_name,
@@ -725,11 +755,12 @@ def write_all_reports(
                 "min_score": float(min_score),
                 "max_score": float(max_score),
                 "score_range": f"[{min_score:.6f}, {max_score:.6f}]",
+                "avg_time_seconds": float(avg_time),
             })
 
     best_df = pd.DataFrame(
         best_rows,
-        columns=["competition","config_id","ModifiersLabel","Competitor","num_seeds","avg_score","min_score","max_score","score_range"]
+        columns=["competition","config_id","ModifiersLabel","Competitor","num_seeds","avg_score","min_score","max_score","score_range","avg_time_seconds"]
     )
     best_df = best_df.sort_values(["config_id", "Competitor"])
     best_df.to_csv(best_csv, index=False)
@@ -766,6 +797,9 @@ def write_all_reports(
                 # Get the seed from the trial
                 seed = best_trial.seed
 
+                # Get the timing for this run
+                elapsed_time = run_times.get((label, method, seed), 0.0)
+
                 # Recompute metrics for the best architecture
                 arch = best_trial.config.get("arch")
                 ne, qps, _ = model_for_label.train_model(
@@ -784,11 +818,12 @@ def write_all_reports(
                     "best_qps": float(qps),
                     "best_ne": float(ne),
                     "best_arch": json.dumps(arch),
+                    "time_seconds": float(elapsed_time),
                 })
 
     best_per_seed_df = pd.DataFrame(
         best_per_seed_rows,
-        columns=["competition","config_id","ModifiersLabel","Competitor","seed","best_score","best_qps","best_ne","best_arch"]
+        columns=["competition","config_id","ModifiersLabel","Competitor","seed","best_score","best_qps","best_ne","best_arch","time_seconds"]
     )
     best_per_seed_df = best_per_seed_df.sort_values(["config_id", "Competitor", "seed"])
     best_per_seed_df.to_csv(best_per_seed_csv, index=False)
@@ -880,6 +915,8 @@ def run_from_folder(
 
     # --- Run experiments for each configuration ---
     all_runs: Dict[str, Dict[str, List[RunLog]]] = {}
+    # Track timing for each run: key is (label, method, seed)
+    run_times: Dict[Tuple[str, str, int], float] = {}
 
     for idx, (modifiers, baseline) in enumerate(zip(modifiers_list, baselines_list), start=1):
         label = f"config_{idx:02d}"
@@ -907,8 +944,13 @@ def run_from_folder(
         for sug in suggestors:
             results[sug.name] = []
             for s in seeds_to_use:
+                # Track time for this run
+                start_time = time.time()
                 # Run num_trials + 1 total: step 0 = baseline, steps 1-num_trials = additional trials
                 run_result = bench.run(sug, n_trials=num_trials + 1, seed=s, initial_arch=baseline)
+                elapsed_time = time.time() - start_time
+                # Store timing
+                run_times[(label, sug.name, s)] = elapsed_time
                 results[sug.name].append(run_result)
 
         out_dir = out_root / label
@@ -934,6 +976,7 @@ def run_from_folder(
         qps_min=qps_min_to_use,
         mode_tag=mode_tag,
         competition_name=competition_name,
+        run_times=run_times,
     )
 
     print(f"\n[run_from_folder] All experiments complete!")
@@ -1039,7 +1082,7 @@ def main():
         )
     else:
         # Original behavior
-        all_runs, modifiers_list, baselines_list, mode_tag, results_dir = run_all(
+        all_runs, modifiers_list, baselines_list, mode_tag, results_dir, run_times = run_all(
             root_dir=args.root_dir,
             n_modifier_sets=args.n_modifiers,
             seed=args.seed,
@@ -1062,6 +1105,7 @@ def main():
             results_dir=results_dir,
             qps_min=args.qps_min,
             mode_tag=mode_tag,
+            run_times=run_times,
         )
 
 if __name__ == "__main__":
